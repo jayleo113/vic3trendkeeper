@@ -1,0 +1,4 @@
+﻿l_english:
+ tk_trend_keeper_sgui: "Trend Keeper"
+ tk_trend_keeper_sgui_desc: "Trends"
+ tk_trend_keeper_sgui_tooltip: "#header Trend Keeper#!\nClick: toggle the history-graph fixes (requires tools\\启动 Trend Keeper.bat in this mod folder to be running).\n\n• Keep a country's history graphs after switching away from it, changing tag or forming a nation\n• Fix the vanilla bug where only countries whose id is divisible by 7 record population graphs\n\nHotkey Ctrl+Alt+F9 also toggles."

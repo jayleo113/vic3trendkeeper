@@ -1,0 +1,37 @@
+Full History Charts v1.5.0 —— 纯 mod 测试说明
+================================================
+
+安装
+1. 把 zip 里的 full_history_charts 文件夹解压到：
+   文档/Paradox Interactive/Victoria 3/mod/
+2. 打开启动器：
+   - 先在"模组"里确认能看到 "Full History Charts - 全时间历史图表"（本地 mod）；
+   - 再到"播放集"，选中你正在用的播放集，点"添加更多模组"，勾选它。
+   如果启动器里没出现：关掉启动器重新打开；仍然没有的话，在 mod 目录里新建 full_history_charts.mod，内容如下，
+   path 填解压后的完整路径（用 / 分隔）：
+       version="1.5.0"
+       tags={
+           "Utilities"
+           "GUI"
+       }
+       name="Full History Charts - 全时间历史图表"
+       supported_version="1.14.*"
+       path="C:/Users/你的用户名/Documents/Paradox Interactive/Victoria 3/mod/full_history_charts"
+3. 进入游戏。已有存档也可以直接用：启用后最迟一个月开始记录。
+
+游戏内测试清单
+A. 日志（屏幕左侧的日志 Journal）
+   - 出现条目 "全时间历史图表"，下面有按钮：暂停记录 / 立即记录一次 / 隐藏图表按钮。
+   - 点"暂停记录"，按钮变成"恢复记录"。
+   - 点"隐藏图表按钮"，屏幕右下方的圆形按钮消失，同时按钮变成"显示图表按钮"。
+   - 点"立即记录一次"，再打开图表，当年的柱子应该出现。
+B. 图表
+   - 右下圆形按钮，或 Ctrl+Shift+G 打开；打开任意国家面板，图表出现在它右侧。
+C. 查错
+   - 打开 文档/Paradox Interactive/Victoria 3/logs/error.log，搜索 fhc，不应有相关报错。
+
+说明
+- 这是纯 mod，不修改引擎内存，也不需要外部程序。每年 1 月 1 日一个数据点，所有国家都记录。
+- 日志条目会在开局时、以及之后每月检查一次时加到每个玩家国家上。切换扮演国家后，最迟下个月出现。
+- 它不会修复原版自带的曲线（那需要外部的 Trend Keeper 助手，没法上传创意工坊）。
+- 日志里没出现条目：先等一个月，或者存档后重新读档。仍然没有，把 error.log 里含 fhc 的几行发给我。

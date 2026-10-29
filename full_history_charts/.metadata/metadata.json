@@ -1,0 +1,12 @@
+{
+  "name" : "Full History Charts - 全时间历史图表",
+  "id" : "fhc.full.history.charts",
+  "version" : "1.5.0",
+  "supported_game_version" : "1.14.*",
+  "short_description" : "Records GDP, population, budget, military, radicals/loyalists and more for every country every year and shows complete charts since the start in native side panels - next to the country panel of any country, also in observer mode. No vanilla GUI overrides.",
+  "tags" : ["Utilities", "GUI"],
+  "relationships" : [],
+  "game_custom_data" : {
+    "multiplayer_synchronized" : true
+  }
+}

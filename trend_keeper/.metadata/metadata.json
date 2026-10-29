@@ -1,0 +1,12 @@
+{
+  "name" : "Trend Keeper - 历史曲线修复",
+  "id" : "local.trend.keeper",
+  "version" : "2.0.0",
+  "supported_game_version" : "1.14.*",
+  "short_description" : "切换/成立国家后保留历史曲线；修复原版只有 ID%7==0 的国家记录人口曲线的 bug。配合 tools/trend_keeper.py 运行时开关，tools/trend_restore.py 找回已丢失历史。",
+  "tags" : ["Utilities", "Fixes"],
+  "relationships" : [],
+  "game_custom_data" : {
+    "multiplayer_synchronized" : true
+  }
+}

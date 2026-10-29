@@ -1,0 +1,67 @@
+[h1]Full History Charts - 全时间历史图表[/h1]
+
+[b]Complete history charts for every country - from the start of the campaign, for AI countries too, in observer mode too.[/b]
+
+Vanilla graphs forget a lot: a country's GDP / prestige / SoL history is wiped when you switch to another country or it forms a new nation, only some AI countries record population at all, and many graphs keep just 1 or 10 years. This mod records its own yearly history for every country and shows it in one window.
+
+[h2]Features[/h2]
+[list]
+[*]14 metrics: GDP, population, GDP per capita, prestige, literacy, standard of living, weekly income, gold reserves, debt, army size, navy size, radicals %, loyalists %, infamy
+[*]One sample per year (1 January) for [b]every[/b] country, up to 150 years, stored in the save
+[*]Survives switching country, tag changes and nation formation; works in observer mode
+[*]Two views: your (played / observed) country, or [b]follow any country you open[/b] in the country panel
+[*]Linear time axis shared by all pages, year labels, y axis with max / half, grid lines
+[*]First / max / latest value, change vs. last year and since the first record; hover a bar for year and value
+[*]Open with the round GDP button (draggable) or [b]Ctrl+Shift+G[/b]; ESC closes; the window is draggable
+[/list]
+
+[h2]Compatibility & performance[/h2]
+[list]
+[*]Pure script + GUI. Uses the official [i]scripted_widgets[/i] mechanism - [b]no vanilla GUI file is overridden[/b]. Only [i]gui/shortcuts.shortcuts[/i] is replaced (all 5 vanilla bindings kept) for the hotkey.
+[*]Recording runs once a year (binary searches, ~110 countries x 14 values) - negligible.
+[*]Save size: about +0.15 MB per game year (~+5% after 100 years).
+[*]Can be added to a running campaign: recording starts within one month. Multiplayer-safe (deterministic script).
+[/list]
+
+[h2]Notes[/h2]
+[list]
+[*]Years before the mod was enabled have no mod data. Offline tools (import history from the game's own graphs into an existing save, CSV export) are available from the author.
+[/list]
+
+[hr][/hr]
+
+[h1]全时间历史图表[/h1]
+
+[b]为每个国家记录完整历史，从开局到现在；AI 国家同样记录，观察者模式下同样可用。[/b]
+
+原版图表会丢失很多历史：
+[list]
+[*]切换国家或成立新国家时，该国的 GDP、声望、生活水平曲线会被清空；
+[*]只有部分 AI 国家记录人口曲线；
+[*]很多图表只保留 1 年或 10 年。
+[/list]
+本 mod 自己按年为每个国家记录历史，并在一个窗口里集中显示。
+
+[h2]功能[/h2]
+[list]
+[*]14 项指标：GDP、人口、人均 GDP、声望、识字率、生活水平、每周收入、国库、债务、陆军、海军、激进比例、忠诚比例、恶名
+[*][b]每个[/b]国家每年 1 月 1 日记录一次，最多 150 年，随存档保存
+[*]切换国家、改 tag、成立新国家都不会丢失；观察者模式可用
+[*]两种视图：本国（扮演或观察的国家），或者[b]跟随你在国家面板中打开的任意国家[/b]
+[*]所有页面共用线性时间轴，带年份刻度、纵轴（最高值和一半）、网格线
+[*]显示首值、最高值、最新值，以及较上年和自首次记录以来的变化；悬停柱子可查看年份与数值
+[*]用圆形 GDP 按钮（可拖动）或 [b]Ctrl+Shift+G[/b] 打开，ESC 关闭，窗口可拖动
+[/list]
+
+[h2]兼容性与性能[/h2]
+[list]
+[*]纯脚本加 GUI，使用官方的 [i]scripted_widgets[/i] 机制，[b]不覆盖任何原版 GUI 文件[/b]。为了快捷键，仅替换 [i]gui/shortcuts.shortcuts[/i]（原版 5 条绑定全部保留）。
+[*]每年只运行一次（二分查找，约 110 国 × 14 项），开销可以忽略。
+[*]存档每个游戏年约增加 0.15 MB，100 年后约 +5%。
+[*]可以在进行中的存档里加入，一个月内开始记录。脚本是确定性的，联机安全。
+[/list]
+
+[h2]说明[/h2]
+[list]
+[*]启用 mod 之前的年份没有 mod 数据。离线工具（把游戏自带曲线导入已有存档、导出 CSV）可以向作者索取。
+[/list]

@@ -1,0 +1,2 @@
+﻿gui/fhc_charts.gui = fhc_launcher
+gui/fhc_charts.gui = fhc_panels

@@ -1,0 +1,31 @@
+﻿# Register the sidebar button for new games and for saves started before this mod was enabled.
+on_game_started = {
+	on_actions = {
+		tk_register_button
+	}
+}
+
+on_monthly_pulse = {
+	on_actions = {
+		tk_register_button
+	}
+}
+
+tk_register_button = {
+	effect = {
+		if = {
+			limit = {
+				NOT = {
+					is_target_in_global_variable_list = {
+						name = custom_button_list_flag
+						target = flag:tk_trend_keeper_sgui
+					}
+				}
+			}
+			add_to_global_variable_list = {
+				name = custom_button_list_flag
+				target = flag:tk_trend_keeper_sgui
+			}
+		}
+	}
+}

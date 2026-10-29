@@ -1,0 +1,10 @@
+﻿# Icon/name holder for the CMF sidebar button; never assigned to anyone.
+tk_trend_keeper_sgui = {
+	icon = "gfx/interface/icons/generic_icons/gdp.dds"
+
+	show_in_list = no
+
+	priority = 0
+
+	character_ideology = no
+}

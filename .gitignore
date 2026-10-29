@@ -1,0 +1,9 @@
+history/
+restored/
+exports/
+dist/
+*.v3
+*.log
+__pycache__/
+trend_keeper/tools/trend_keeper_config.json
+trend_keeper/tools/开启开机自启.bat

@@ -1,0 +1,9 @@
+# Vanilla bindings (copied from game/gui/shortcuts.shortcuts) + Full History Charts
+shortcutbindings = {
+    close_window = "ESCAPE"
+	screenshot = "F11"
+	screenshot_map = "shift+F11"
+	center_capital = "HOME"
+	focus_search = "ctrl+F"
+	fhc_toggle = "ctrl+shift+G"
+}

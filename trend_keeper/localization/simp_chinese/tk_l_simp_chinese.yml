@@ -1,0 +1,4 @@
+﻿l_simp_chinese:
+ tk_trend_keeper_sgui: "历史曲线修复"
+ tk_trend_keeper_sgui_desc: "历史曲线"
+ tk_trend_keeper_sgui_tooltip: "#header 历史曲线修复（Trend Keeper）#!\n点击：开启/关闭修复（需先运行 mod 目录 tools 里的「启动 Trend Keeper.bat」）。\n\n• 切换国家、改 tag、成立新国家后保留旧国家的全部历史曲线\n• 修复原版只有 ID 能被 7 整除的国家才记录人口曲线的 bug（观察者模式可看全时间线）\n\n快捷键 Ctrl+Alt+F9 同样可以开关。"

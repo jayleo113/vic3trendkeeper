@@ -1,0 +1,42 @@
+﻿# Trend Keeper: commands for the external helper (tools/trend_keeper.py).
+# They only write a marker into game.log; no game state is changed, so they are safe in
+# multiplayer and in observer mode. Console usage (debug mode):  effect tk_toggle = yes
+
+# the two main fixes (keep_history + fix_pop_stats)
+tk_on = {
+	debug_log = "TRENDKEEPER:ON"
+}
+
+tk_off = {
+	debug_log = "TRENDKEEPER:OFF"
+}
+
+tk_toggle = {
+	debug_log = "TRENDKEEPER:TOGGLE"
+}
+
+# individual switches
+tk_keep_history_on = {
+	debug_log = "TRENDKEEPER:ON_KEEP_HISTORY"
+}
+
+tk_keep_history_off = {
+	debug_log = "TRENDKEEPER:OFF_KEEP_HISTORY"
+}
+
+tk_pop_stats_on = {
+	debug_log = "TRENDKEEPER:ON_FIX_POP_STATS"
+}
+
+tk_pop_stats_off = {
+	debug_log = "TRENDKEEPER:OFF_FIX_POP_STATS"
+}
+
+# advanced: per-pop graphs for every country (memory grows every game week)
+tk_track_pops_on = {
+	debug_log = "TRENDKEEPER:ON_TRACK_POPS"
+}
+
+tk_track_pops_off = {
+	debug_log = "TRENDKEEPER:OFF_TRACK_POPS"
+}
