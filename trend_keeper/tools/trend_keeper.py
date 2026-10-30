@@ -38,6 +38,7 @@ Usage:
   python  trend_keeper.py selftest     resolve every patch against the exe on disk (no game needed)
   python  trend_keeper.py bench SECONDS
   python  trend_keeper.py compare SECONDS [NAME..]   A/B/A benchmark (default: fix_pop_stats)
+  python  trend_keeper.py profile [SECONDS [MS]]    read-only hotspot sampler (is the lag in autonomous investment?)
   python  trend_keeper.py invest [set BUDGET [MIN] | reset]   cap_investment stats / live parameters (no restart)
   python  trend_keeper.py daemon       headless: auto-apply, hotkey, in-game button
 """
@@ -542,6 +543,30 @@ class Game:
             vals += [cur['calls'], cur['throttled'], cur['max_p'], cur['max_n']]
         self._write_code(addr, struct.pack('<6I', *vals))
 
+    def thread_samples(self):
+        """[(tid, rip, rsp)] of every thread of the (suspended) process; rip/rsp None when unreadable."""
+        out = []
+        snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+        raw = ctypes.create_string_buffer(0x4D0 + 16)
+        ctx = (ctypes.addressof(raw) + 15) & ~15
+        try:
+            e = THREADENTRY32(dwSize=ctypes.sizeof(THREADENTRY32))
+            ok = k32.Thread32First(snap, ctypes.byref(e))
+            while ok:
+                if e.th32OwnerProcessID == self.pid:
+                    th = k32.OpenThread(THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, False, e.th32ThreadID)
+                    if th:
+                        ctypes.memset(ctx, 0, 0x4D0)
+                        ctypes.c_uint32.from_address(ctx + 0x30).value = CONTEXT_CONTROL
+                        if k32.GetThreadContext(th, ctypes.c_void_p(ctx)):
+                            out.append((e.th32ThreadID, ctypes.c_uint64.from_address(ctx + 0xF8).value,
+                                        ctypes.c_uint64.from_address(ctx + 0x98).value))
+                        k32.CloseHandle(th)
+                ok = k32.Thread32Next(snap, ctypes.byref(e))
+        finally:
+            k32.CloseHandle(snap)
+        return out
+
     def thread_rips(self):
         """RIP of every thread of the (suspended) process; None when unreadable."""
         rips = []
@@ -688,6 +713,82 @@ def save_config(cfg):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except OSError:
         pass
+
+
+# ================================================================ hotspot sampler
+# functions found with REA (1.14.5, default image base): address -> (length in bytes from REA, meaning).
+# .pdata splits big functions into chunks, so the extents come from REA instead of the exception table.
+PROFILE_ROOTS = {
+    0x140f771a0: (1039, '自主投资·串行落地（每国循环 n 次）'),
+    0x140f7ec40: (233, '自主投资·并行选下一个建筑'),
+    0x140c86860: (286, '  选下一个建筑（单国）'),
+    0x1415152a0: (3571, '  选建筑的决策函数'),
+    0x140f5df00: (1211, '  落地一笔投资'),
+    0x1414f8d00: (960, '  落地后刷新优先级 SetPotentialPrivateInvestmentPriorities'),
+    0x1414fab60: (175, '    └ 全表扫描选最优'),
+    0x1414fe4b0: (418, '    └ 对候选并行重算'),
+    0x140c888a0: (1249, 'UpdateInvestmentCaches（事件触发）'),
+}
+
+
+def profile(game, seconds=30, interval_ms=15, out=print, top=22):
+    """Read-only hotspot sampler: suspends the game for a few hundred microseconds per sample, records every thread's
+    RIP and scans its stack for return addresses into the functions of PROFILE_ROOTS (inclusive attribution;
+    stale stack slots can cause a few false hits)."""
+    import bisect, collections
+    img = Image(game.path)
+    text_lo, text_hi = game.base + img.text_rva, game.base + img.text_rva + len(img.code)
+    roots = {}
+    for va, (length, label) in PROFILE_ROOTS.items():
+        roots[(game.base + va - img.base, game.base + va - img.base + length)] = label
+    selfc, incl = collections.Counter(), collections.Counter()
+    busy = total = outside = 0
+    end = time.time() + seconds
+    out(f'采样 {seconds:.0f} 秒（每 {interval_ms} ms 一次，只读）……请保持游戏在卡顿的状态下运行')
+    while time.time() < end:
+        ntdll.NtSuspendProcess(game.h)
+        try:
+            samples = game.thread_samples()
+            stacks = {}
+            for tid, rip, rsp in samples:
+                stacks[tid] = b''
+                for n in (4096, 2048, 1024, 256):       # the stack may end before 4 KiB
+                    try:
+                        stacks[tid] = game.read(rsp, n)
+                        break
+                    except OSError:
+                        continue
+        finally:
+            ntdll.NtResumeProcess(game.h)
+        for tid, rip, rsp in samples:
+            total += 1
+            hits = set()
+            raw = stacks[tid]
+            addrs = [rip] + list(struct.unpack('<%dQ' % (len(raw) // 8), raw[:len(raw) // 8 * 8]))
+            for a in addrs:
+                for (lo, hi), label in roots.items():
+                    if lo <= a < hi:
+                        hits.add(label)
+            if text_lo <= rip < text_hi:
+                busy += 1
+                i = bisect.bisect_right(img.fstarts, rip - game.base) - 1
+                selfc[hex(game.base + img.funcs[i][0]) if i >= 0 else '?'] += 1
+            else:
+                outside += 1
+            for h in hits:
+                incl[h] += 1
+        time.sleep(interval_ms / 1000)
+    n = max(total, 1)
+    out(f'共 {total} 个线程样本；其中在游戏代码里 {busy}（{busy / n:.0%}），在系统/等待里 {outside}（{outside / n:.0%}）')
+    out('—— 含调用者的占比（占全部线程样本；一次样本可能同时命中父子函数）——')
+    for label, c in sorted(incl.items(), key=lambda kv: -kv[1]):
+        out(f'  {c / n:6.1%}  {label}')
+    if not incl:
+        out('  （没有样本落在自主投资相关函数里）')
+    out('—— 自身占比最高的函数（运行时地址）——')
+    for a, c in selfc.most_common(top):
+        out(f'  {c / n:6.1%}  {a}  (RVA {int(a, 16) - game.base:#x})')
+    return {'total': total, 'busy': busy, 'incl': dict(incl), 'self': dict(selfc)}
 
 
 # ================================================================ benchmark
@@ -959,6 +1060,20 @@ def run_gui():
         threading.Thread(target=run, daemon=True).start()
     ttk.Button(opts, text='性能测试 60s', command=do_bench).pack(side='right')
 
+    def do_profile():
+        def run():
+            with ctl.lock:
+                g = ctl.game
+            if not g:
+                ctl.out('游戏未运行')
+                return
+            try:
+                profile(g, 30, 15, out=ctl.out)
+            except OSError as e:
+                ctl.out(f'采样失败：{e}')
+        threading.Thread(target=run, daemon=True).start()
+    ttk.Button(opts, text='热点采样 30s', command=do_profile).pack(side='right', padx=6)
+
     ttk.Label(root, text='快捷键 Ctrl+Alt+F9 开/关修复　|　游戏内：CMF 侧边栏按钮，或控制台 effect tk_toggle = yes',
               foreground='#555').pack(anchor='w', padx=12)
     log = scrolledtext.ScrolledText(root, height=14, font=('Consolas', 9))
@@ -1117,6 +1232,8 @@ def main(argv):
             print(f"cap_investment {patch_state(g, 'cap_investment')}  预算 {st['budget']}  最小 {st['min']}")
             print(f"  统计（自上次重置）：国家次数 {st['calls']}，被限制 {st['throttled']}，"
                   f"见过的最大潜在建筑数 {st['max_p']}，原版最大落地次数 {st['max_n']}")
+        elif cmd == 'profile':
+            profile(g, float(argv[1]) if len(argv) > 1 else 30, float(argv[2]) if len(argv) > 2 else 15)
         elif cmd == 'bench':
             bench(g, float(argv[1]) if len(argv) > 1 else 60, 'bench')
         elif cmd == 'compare':
