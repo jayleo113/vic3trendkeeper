@@ -1,0 +1,10 @@
+{
+  "name" : "PERF TEST - Autonomous Investment OFF",
+  "id" : "vic3tk.perf.ai_invest_off",
+  "version" : "0.1.0",
+  "supported_game_version" : "1.14.*",
+  "short_description" : "Control experiment: turns off autonomous investment construction (NAI define) to check whether late-game lag comes from it. Not for normal play.",
+  "tags" : ["Utilities"],
+  "relationships" : [],
+  "game_custom_data" : { "multiplayer_synchronized" : true }
+}

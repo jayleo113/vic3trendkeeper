@@ -38,6 +38,7 @@ Usage:
   python  trend_keeper.py selftest     resolve every patch against the exe on disk (no game needed)
   python  trend_keeper.py bench SECONDS
   python  trend_keeper.py compare SECONDS [NAME..]   A/B/A benchmark (default: fix_pop_stats)
+  python  trend_keeper.py invest [set BUDGET [MIN] | reset]   cap_investment stats / live parameters (no restart)
   python  trend_keeper.py daemon       headless: auto-apply, hotkey, in-game button
 """
 import ctypes
@@ -72,6 +73,7 @@ class Image:
         nsec = struct.unpack_from('<H', raw, pe + 6)[0]
         opt = pe + 24
         self.base = struct.unpack_from('<Q', raw, opt + 24)[0]
+        self.image_size = struct.unpack_from('<I', raw, opt + 56)[0]
         exc_rva, exc_size = struct.unpack_from('<II', raw, opt + 112 + 3 * 8)
         sh = opt + struct.unpack_from('<H', raw, pe + 20)[0]
         self.secs = []
@@ -121,13 +123,22 @@ class Image:
         return self.funcs[i]
 
     def code_cave(self, size):
-        """16-byte aligned spot inside an int3 padding run that belongs to no function."""
+        """16-byte aligned spot inside an int3 padding run that belongs to no function (never handed out twice)."""
+        used = self.__dict__.setdefault('_used_caves', [])
         for m in re.finditer(rb'\xcc{%d,}' % (size + 16), self.code):
             start, end = self.text_rva + m.start(), self.text_rva + m.end()
             cave = (start + 8 + 15) & ~15
             if cave + size <= end - 4 and not self.in_function(start) and not self.in_function(end - 1):
+                if any(cave < u + n and u < cave + size for u, n in used):
+                    continue
+                used.append((cave, size))
                 return cave
         raise LookupError('找不到可用的代码洞')
+
+
+    def extra_cave(self):
+        """RVA of a block the helper allocates itself right behind the image (rel32-reachable); the exe has no room left."""
+        return (self.image_size + 0xFFFF + 0x10000) & ~0xFFFF
 
 
 def rel32(src_next, dst):
@@ -213,6 +224,73 @@ def resolve_extend_budget(img):
         raise LookupError(f'CBudget ctor: 只找到 {len(sites)} 条预算曲线')
     return sites
 
+INVEST_BUDGET = 20000   # work units (placements x potential buildings) a country may spend per weekly task
+INVEST_MIN = 3          # never fewer than this many placements per country per task
+EXTRA_SIZE = 0x1000
+INV_DATA = 0x100        # offset of the data area inside the helper-allocated block (code sits at offset 0)
+INV_FIELDS = ('budget', 'min', 'calls', 'throttled', 'max_p', 'max_n')   # u32 each, from INV_DATA
+
+
+def _asm_invest(cave, site):
+    """45+ bytes of x64 for the cap, RIP-relative to the data area, hand assembled (no assembler dependency).
+
+    cmp edx,ebx ; cmovg ebx,edx            the two replaced instructions: ebx = n = max(1, pool/cost)
+    mov ecx,[r14+0x21c]                    P = number of potential buildings of this country
+    test ecx,ecx ; jle done
+    inc [calls] ; max_p = max(max_p, P) ; max_n = max(max_n, n)
+    mov eax,[budget] ; xor edx,edx ; div ecx ; cmp eax,[min] ; jae ok ; mov eax,[min]     cap = max(min, budget/P)
+    ok: cmp ebx,eax ; jle done ; inc [throttled] ; mov ebx,eax
+    done: jmp site+5"""
+    out = bytearray()
+    labels, fixups = {}, []
+
+    def emit(b):
+        out.extend(bytes.fromhex(b) if isinstance(b, str) else b)
+
+    def rip(opcode_hex, field):                  # opcode + modrm(rip) + disp32 to the data field
+        emit(opcode_hex)
+        fixups.append((len(out), field))
+        emit(b'\0\0\0\0')
+
+    def jcc(opcode_hex, label):
+        emit(opcode_hex)
+        fixups.append((len(out), label))
+        emit(b'\0')
+
+    emit('3bd30f4fda'); emit('418b8e1c020000'); emit('85c9'); jcc('7e', 'done')
+    rip('ff05', 'calls')
+    rip('3b0d', 'max_p'); jcc('76', 'p_ok'); rip('890d', 'max_p'); labels['p_ok'] = len(out)
+    rip('3b1d', 'max_n'); jcc('76', 'n_ok'); rip('891d', 'max_n'); labels['n_ok'] = len(out)
+    rip('8b05', 'budget'); emit('31d2f7f1'); rip('3b05', 'min'); jcc('73', 'ok'); rip('8b05', 'min')
+    labels['ok'] = len(out)
+    emit('39c3'); jcc('7e', 'done'); rip('ff05', 'throttled'); emit('89c3')
+    labels['done'] = len(out)
+    emit('e9'); jmp_at = len(out); emit(b'\0\0\0\0')
+    for at, target in fixups:
+        if target in labels:                      # rel8
+            out[at] = labels[target] - (at + 1)
+        else:                                     # rip-relative disp32; next instruction starts at at+4
+            disp = cave + INV_DATA + 4 * INV_FIELDS.index(target) - (cave + at + 4)
+            out[at:at + 4] = struct.pack('<i', disp)
+    out[jmp_at:jmp_at + 4] = rel32(cave + jmp_at + 4, site + 5)
+    return bytes(out)
+
+
+def resolve_cap_investment(img):
+    """HandleAutonomousInvestment serial phase (0x140f771a0): n = max(1, round(pool / cost)).
+
+    Every placement re-scans all P potential buildings (SetPotentialPrivateInvestmentPriorities), so the cost of one
+    country is about n x P. Cap n at clamp(BUDGET / P, MIN, n): small countries are untouched, only huge ones are
+    throttled. The first `cap` placements are exactly the vanilla ones; the rest wait for the next weekly task.
+    BUDGET / MIN and some counters live in the data area, so they can be changed while the game runs."""
+    site = img.find_one('3b d3 0f 4f da 85 db 0f 8e ?? ?? ?? ??', 'HandleAutonomousInvestment 循环次数')
+    cave = img.extra_cave()
+    code = _asm_invest(cave, site)
+    assert len(code) < INV_DATA
+    jmp = bytes.fromhex('e9') + rel32(site + 5, cave)
+    return [(cave, bytes(len(code)), code, 2),                   # 2 = block allocated by the helper
+            (site, img.bytes_at(site, 5), jmp, False)]
+
 
 PATCHES = {
     'keep_history': {
@@ -237,13 +315,20 @@ PATCHES = {
                 '对之后读档/开局生效。',
         'resolve': resolve_extend_budget, 'default': True,
     },
+    'cap_investment': {
+        'title': '（高级）限制自主投资每周落地次数（缓解后期卡顿）',
+        'desc': '自主投资每落地一笔都会重扫该国全部潜在建筑，开销约 落地笔数×潜在建筑数。开启后每国每周最多落地 '
+                'max(最小值, 预算÷潜在建筑数) 笔（默认预算 20000、最小 3；配置项 invest_budget / invest_min）：小国不受影响，'
+                '只限制超大建造力的国家，超出的资金留到下周。前几笔与原版相同，但会改变模拟结果，联机必须所有人同样开启。默认关闭。',
+        'resolve': resolve_cap_investment, 'default': False,
+    },
     'track_pops': {
         'title': '（高级）所有国家的单个 pop 曲线',
         'desc': 'pop 悬浮提示里的曲线对全部国家记录。约 18 万个 pop，内存随游戏时间持续增长，默认关闭。',
         'resolve': resolve_track_pops, 'default': False,
     },
 }
-ORDER = ['keep_history', 'fix_pop_stats', 'extend_saved', 'extend_budget', 'track_pops']
+ORDER = ['keep_history', 'fix_pop_stats', 'extend_saved', 'extend_budget', 'cap_investment', 'track_pops']
 DEFAULT_CONFIG = {'enabled': {n: PATCHES[n]['default'] for n in ORDER}, 'auto_apply': True, 'hotkey': True}
 
 # CTrendManager::Update reads the game state as [[rip+X]+0x608]; its +0x8 is the clock in hours
@@ -327,6 +412,8 @@ for _fn, _st in (('Process32FirstW', PROCESSENTRY32W), ('Process32NextW', PROCES
     getattr(k32, _fn).argtypes = [wt.HANDLE, ctypes.POINTER(_st)]
 k32.ReadProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
 k32.WriteProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+k32.VirtualAllocEx.restype = ctypes.c_void_p
+k32.VirtualAllocEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wt.DWORD, wt.DWORD]
 k32.VirtualProtectEx.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t, wt.DWORD, ctypes.POINTER(wt.DWORD)]
 k32.FlushInstructionCache.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_size_t]
 k32.GetThreadContext.argtypes = [wt.HANDLE, ctypes.c_void_p]
@@ -421,6 +508,40 @@ class Game:
             k32.VirtualProtectEx(self.h, ctypes.c_void_p(addr), len(data), old.value, ctypes.byref(wt.DWORD()))
         k32.FlushInstructionCache(self.h, ctypes.c_void_p(addr), len(data))
 
+    def ensure_extra(self, rva, size=EXTRA_SIZE):
+        """Commit an executable block at base+rva (idempotent)."""
+        addr = self.base + rva
+        try:
+            self.read(addr, 1)
+            return
+        except OSError:
+            pass
+        got = k32.VirtualAllocEx(self.h, ctypes.c_void_p(addr), size, 0x3000, PAGE_EXECUTE_READWRITE)
+        if got != addr:
+            raise OSError(f'VirtualAllocEx 在 {addr:#x} 失败（{ctypes.get_last_error()}），该地址已被占用')
+
+    def _inv_addr(self):
+        sites = self.patches.get('cap_investment')
+        if isinstance(sites, Exception) or not sites:
+            raise RuntimeError('cap_investment 不可用')
+        return self.base + sites[0][0] + INV_DATA
+
+    def invest_get(self):
+        """{'budget','min','calls','throttled','max_p','max_n'}; counters stay 0 until the patch has been enabled."""
+        raw = self.read(self._inv_addr(), 4 * len(INV_FIELDS))
+        return dict(zip(INV_FIELDS, struct.unpack('<%dI' % len(INV_FIELDS), raw)))
+
+    def invest_set(self, budget=None, minimum=None, reset_stats=False):
+        """Change the cap parameters (and optionally zero the counters) while the game runs."""
+        addr = self._inv_addr()
+        cur = self.invest_get()
+        vals = [budget if budget is not None else cur['budget'], minimum if minimum is not None else cur['min']]
+        if reset_stats:
+            vals += [0, 0, 0, 0]
+        else:
+            vals += [cur['calls'], cur['throttled'], cur['max_p'], cur['max_n']]
+        self._write_code(addr, struct.pack('<6I', *vals))
+
     def thread_rips(self):
         """RIP of every thread of the (suspended) process; None when unreadable."""
         rips = []
@@ -488,7 +609,12 @@ def patch_state(game, name):
         return 'unavailable'
     states = set()
     for rva, orig, new, is_cave in sites:
-        cur = game.read(game.base + rva, len(orig))
+        try:
+            cur = game.read(game.base + rva, len(orig))
+        except OSError:
+            if is_cave == 2:                        # block not allocated yet
+                continue
+            raise
         if is_cave:
             if cur not in (orig, new):              # cave must hold padding or our own code
                 return 'mismatch'
@@ -511,6 +637,11 @@ def set_patch(game, name, enable):
         return False
     sites = game.patches[name]
     if enable:      # caves first, then the jumps into them
+        for r, o, n, cave in sites:
+            if cave == 2:
+                game.ensure_extra(r)
+        if name == 'cap_investment' and game.invest_get()['budget'] == 0:      # fresh block: write the defaults
+            game.invest_set(INVEST_BUDGET, INVEST_MIN)
         writes = [(game.base + r, n) for r, o, n, cave in sites if cave] + \
                  [(game.base + r, n) for r, o, n, cave in sites if not cave]
     else:           # restore the jumps; the cave stays behind as unreachable code
@@ -543,6 +674,9 @@ def load_config():
                 cfg['enabled'][n] = bool(v)
         for k in ('auto_apply', 'hotkey'):
             cfg[k] = user.get(k, cfg[k])
+        global INVEST_BUDGET, INVEST_MIN
+        INVEST_BUDGET = max(100, min(10**7, int(user.get('invest_budget', INVEST_BUDGET))))
+        INVEST_MIN = max(1, min(64, int(user.get('invest_min', INVEST_MIN))))
     except (OSError, ValueError):
         pass
     return cfg
@@ -770,6 +904,35 @@ def run_gui():
         ttk.Label(box, text=PATCHES[n]['desc'], wraplength=600,
                   foreground='#555' if PATCHES[n]['default'] else '#a05000').pack(anchor='w', padx=28)
 
+    inv = ttk.Frame(root)
+    inv.pack(fill='x', padx=12, pady=2)
+    ttk.Label(inv, text='自主投资限制：预算').pack(side='left')
+    inv_budget = tk.StringVar(value=str(INVEST_BUDGET))
+    inv_min = tk.StringVar(value=str(INVEST_MIN))
+    ttk.Entry(inv, textvariable=inv_budget, width=8).pack(side='left', padx=3)
+    ttk.Label(inv, text='最小').pack(side='left')
+    ttk.Entry(inv, textvariable=inv_min, width=4).pack(side='left', padx=3)
+
+    def inv_apply(reset=False):
+        def run():
+            with ctl.lock:
+                g = ctl.game
+            if not g or ctl.readonly:
+                ctl.out('游戏未运行或处于只读模式')
+                return
+            try:
+                if reset and not inv_budget.get().strip():
+                    g.invest_set(reset_stats=True)
+                else:
+                    g.invest_set(int(inv_budget.get()), int(inv_min.get()), reset_stats=True)
+                ctl.out('已更新自主投资限制参数并清零统计（无需重启游戏）')
+            except (ValueError, OSError, RuntimeError) as e:
+                ctl.out(f'设置失败：{e}')
+        threading.Thread(target=run, daemon=True).start()
+    ttk.Button(inv, text='应用并清零统计', command=inv_apply).pack(side='left', padx=4)
+    inv_lbl = ttk.Label(inv, text='', foreground='#555')
+    inv_lbl.pack(side='left', padx=6)
+
     opts = ttk.Frame(root)
     opts.pack(fill='x', padx=12, pady=6)
     auto = tk.BooleanVar(value=ctl.cfg['auto_apply'])
@@ -819,6 +982,14 @@ def run_gui():
             for n in ORDER:
                 state_lbl[n].config(text=labels[st[n]])
                 vars_[n].set(ctl.cfg['enabled'][n])
+            try:
+                if st.get('cap_investment') == 'on':
+                    v = ctl.game.invest_get()
+                    inv_lbl.config(text=f"国家次数 {v['calls']}　被限制 {v['throttled']}　最大潜在建筑 {v['max_p']}　原版最大落地 {v['max_n']}")
+                else:
+                    inv_lbl.config(text='（补丁未开启）')
+            except (OSError, RuntimeError):
+                inv_lbl.config(text='')
         else:
             status.set('等待游戏启动……（启动后自动附加）')
             for n in ORDER:
@@ -844,7 +1015,7 @@ def selftest(exe):
             continue
         print(f'  {n:14s} OK')
         for rva, orig, new, cave in sites:
-            good = img.bytes_at(rva, len(orig)) == orig
+            good = True if cave == 2 else img.bytes_at(rva, len(orig)) == orig
             ok &= good
             print(f'      {"cave" if cave else "site"} {img.base + rva:#x}  {orig.hex(" ")} -> {new.hex(" ")}  '
                   f'{"原始字节一致" if good else "原始字节不符!"}')
@@ -937,6 +1108,15 @@ def main(argv):
         elif cmd in ('on', 'off'):
             for n in argv[1:] or [n for n in ORDER if PATCHES[n]['default']]:
                 print(n, '已修改' if set_patch(g, n, cmd == 'on') else '无需修改', '→', patch_state(g, n))
+        elif cmd == 'invest':
+            if argv[1:2] == ['set']:
+                g.invest_set(int(argv[2]), int(argv[3]) if len(argv) > 3 else None, reset_stats=True)
+            elif argv[1:2] == ['reset']:
+                g.invest_set(reset_stats=True)
+            st = g.invest_get()
+            print(f"cap_investment {patch_state(g, 'cap_investment')}  预算 {st['budget']}  最小 {st['min']}")
+            print(f"  统计（自上次重置）：国家次数 {st['calls']}，被限制 {st['throttled']}，"
+                  f"见过的最大潜在建筑数 {st['max_p']}，原版最大落地次数 {st['max_n']}")
         elif cmd == 'bench':
             bench(g, float(argv[1]) if len(argv) > 1 else 60, 'bench')
         elif cmd == 'compare':
