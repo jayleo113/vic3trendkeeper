@@ -330,7 +330,8 @@ PATCHES = {
     },
 }
 ORDER = ['keep_history', 'fix_pop_stats', 'extend_saved', 'extend_budget', 'cap_investment', 'track_pops']
-DEFAULT_CONFIG = {'enabled': {n: PATCHES[n]['default'] for n in ORDER}, 'auto_apply': True, 'hotkey': True}
+DEFAULT_CONFIG = {'enabled': {n: PATCHES[n]['default'] for n in ORDER}, 'auto_apply': True, 'hotkey': True,
+                  'tray_on_close': True, 'start_hidden': False}
 
 # CTrendManager::Update reads the game state as [[rip+X]+0x608]; its +0x8 is the clock in hours
 GLOBAL_SIG = '48 8b 05 ?? ?? ?? ?? 49 8d 4f 10 4c 8b b0 08 06 00 00'
@@ -697,7 +698,7 @@ def load_config():
         for n, v in user.get('enabled', {}).items():
             if n in PATCHES:                       # silently drops keys of older versions
                 cfg['enabled'][n] = bool(v)
-        for k in ('auto_apply', 'hotkey'):
+        for k in ('auto_apply', 'hotkey', 'tray_on_close', 'start_hidden'):
             cfg[k] = user.get(k, cfg[k])
         global INVEST_BUDGET, INVEST_MIN
         INVEST_BUDGET = max(100, min(10**7, int(user.get('invest_budget', INVEST_BUDGET))))
@@ -983,6 +984,129 @@ def single_instance():
     return ctypes.get_last_error() != 183, h          # 183 = ERROR_ALREADY_EXISTS
 
 
+# ================================================================ system tray (pure ctypes, no dependency)
+class Tray:
+    """Notification-area icon. Runs its own message-only window and thread; events are delivered to
+    on_event(kind, x, y) with kind 'menu' (right click, cursor position), 'open' (left click)."""
+    WM_TRAY = 0x8000 + 20                       # WM_APP + 20
+
+    def __init__(self, icon_path, tip, on_event):
+        self.icon_path, self.tip, self.on_event = icon_path, tip, on_event
+        self.hwnd = None
+        self.ready = threading.Event()
+        self.ok = False
+        self._nid = None
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True).start()
+        self.ready.wait(3)
+        return self.ok
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [('a', wt.DWORD), ('b', wt.WORD), ('c', wt.WORD), ('d', ctypes.c_ubyte * 8)]
+
+    class _NID(ctypes.Structure):
+        pass
+
+    def _make_nid(self):
+        G = Tray._GUID
+        Tray._NID._fields_ = [('cbSize', wt.DWORD), ('hWnd', wt.HWND), ('uID', wt.UINT), ('uFlags', wt.UINT),
+                              ('uCallbackMessage', wt.UINT), ('hIcon', wt.HANDLE), ('szTip', wt.WCHAR * 128),
+                              ('dwState', wt.DWORD), ('dwStateMask', wt.DWORD), ('szInfo', wt.WCHAR * 256),
+                              ('uVersion', wt.UINT), ('szInfoTitle', wt.WCHAR * 64), ('dwInfoFlags', wt.DWORD),
+                              ('guidItem', G), ('hBalloonIcon', wt.HANDLE)]
+        nid = Tray._NID()
+        nid.cbSize = ctypes.sizeof(Tray._NID)
+        nid.hWnd = self.hwnd
+        nid.uID = 1
+        nid.uFlags = 0x1 | 0x2 | 0x4                      # NIF_MESSAGE | NIF_ICON | NIF_TIP
+        nid.uCallbackMessage = Tray.WM_TRAY
+        nid.hIcon = self._icon
+        nid.szTip = self.tip[:120]
+        return nid
+
+    def _run(self):
+        u32, s32, k = ctypes.windll.user32, ctypes.windll.shell32, ctypes.windll.kernel32
+        LRESULT = ctypes.c_ssize_t
+        u32.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
+        u32.DefWindowProcW.restype = LRESULT
+        u32.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID]
+        u32.CreateWindowExW.restype = wt.HWND
+        u32.LoadImageW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, wt.UINT, ctypes.c_int, ctypes.c_int, wt.UINT]
+        u32.LoadImageW.restype = wt.HANDLE
+        u32.PostMessageW.argtypes = [wt.HWND, wt.UINT, ctypes.c_size_t, ctypes.c_ssize_t]
+        s32.Shell_NotifyIconW.argtypes = [wt.DWORD, ctypes.c_void_p]
+        WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, ctypes.c_size_t, ctypes.c_ssize_t)
+        taskbar_created = u32.RegisterWindowMessageW('TaskbarCreated')
+
+        def proc(hwnd, msg, wparam, lparam):
+            try:
+                if msg == Tray.WM_TRAY:
+                    ev = lparam & 0xFFFF
+                    if ev == 0x205:                          # WM_RBUTTONUP
+                        pt = wt.POINT()
+                        u32.GetCursorPos(ctypes.byref(pt))
+                        self.on_event('menu', pt.x, pt.y)
+                    elif ev in (0x202, 0x203):               # WM_LBUTTONUP / double click
+                        self.on_event('open', 0, 0)
+                    return 0
+                if msg == taskbar_created and self._nid is not None:     # explorer restarted: add the icon again
+                    s32.Shell_NotifyIconW(0, ctypes.byref(self._nid))
+                    return 0
+                if msg == 0x10:                              # WM_CLOSE
+                    if self._nid is not None:
+                        s32.Shell_NotifyIconW(2, ctypes.byref(self._nid))     # NIM_DELETE
+                    u32.DestroyWindow(hwnd)
+                    return 0
+                if msg == 0x2:                               # WM_DESTROY
+                    u32.PostQuitMessage(0)
+                    return 0
+            except Exception:
+                pass
+            return u32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        self._proc = WNDPROC(proc)                           # keep a reference
+
+        class WNDCLASS(ctypes.Structure):
+            _fields_ = [('style', wt.UINT), ('lpfnWndProc', WNDPROC), ('cbClsExtra', ctypes.c_int),
+                        ('cbWndExtra', ctypes.c_int), ('hInstance', wt.HINSTANCE), ('hIcon', wt.HANDLE),
+                        ('hCursor', wt.HANDLE), ('hbrBackground', wt.HANDLE), ('lpszMenuName', wt.LPCWSTR),
+                        ('lpszClassName', wt.LPCWSTR)]
+        hinst = k.GetModuleHandleW(None)
+        wc = WNDCLASS()
+        wc.lpfnWndProc, wc.hInstance, wc.lpszClassName = self._proc, hinst, 'TrendKeeperTray'
+        u32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASS)]
+        if not u32.RegisterClassW(ctypes.byref(wc)):
+            self.ready.set()
+            return
+        self.hwnd = u32.CreateWindowExW(0, 'TrendKeeperTray', 'TrendKeeperTray', 0, 0, 0, 0, 0, wt.HWND(-3), None, hinst, None)
+        if not self.hwnd:
+            self.ready.set()
+            return
+        size = u32.GetSystemMetrics(49)                      # SM_CXSMICON
+        self._icon = u32.LoadImageW(None, self.icon_path, 1, size, size, 0x10) if os.path.exists(self.icon_path) else None
+        if not self._icon:
+            self._icon = u32.LoadIconW(None, ctypes.c_void_p(32512))       # IDI_APPLICATION
+        self._nid = self._make_nid()
+        self.ok = bool(s32.Shell_NotifyIconW(0, ctypes.byref(self._nid)))   # NIM_ADD
+        self.ready.set()
+        msg = wt.MSG()
+        while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            u32.TranslateMessage(ctypes.byref(msg))
+            u32.DispatchMessageW(ctypes.byref(msg))
+
+    def set_tip(self, tip):
+        if self._nid is not None and tip != self.tip:
+            self.tip = tip
+            self._nid.szTip = tip[:120]
+            ctypes.windll.shell32.Shell_NotifyIconW(1, ctypes.byref(self._nid))     # NIM_MODIFY
+
+    def stop(self):
+        if self.hwnd:
+            ctypes.windll.user32.PostMessageW(self.hwnd, 0x10, 0, 0)
+
+
 # ================================================================ GUI
 def run_gui():
     import tkinter as tk
@@ -992,7 +1116,7 @@ def run_gui():
     first, _mutex = single_instance()
     if not first:
         tk.Tk().withdraw()
-        messagebox.showinfo('Trend Keeper', 'Trend Keeper 已经在运行。')
+        messagebox.showinfo('Trend Keeper', 'Trend Keeper 已经在运行。\n如果看不到窗口，请点击任务栏右下角托盘里的图标。')
         return
 
     try:                                            # crisp text on high-DPI screens instead of bitmap scaling
@@ -1229,6 +1353,14 @@ def run_gui():
     _l, right, _x = row(pg, '游戏启动后自动应用', '助手窗口打开后，检测到游戏就自动附加并应用已开启的补丁。')
     auto_t = Toggle(right, ctl.cfg['auto_apply'], lambda on: (ctl.cfg.__setitem__('auto_apply', on), save_config(ctl.cfg)))
     auto_t.pack()
+    _l, right, _x = row(pg, '关闭窗口时最小化到托盘', '点右上角关闭后，助手继续在托盘运行，游戏启动时照常自动应用。关闭此项则直接退出。')
+    close_t = Toggle(right, ctl.cfg.get('tray_on_close', True),
+                     lambda on: (ctl.cfg.__setitem__('tray_on_close', on), save_config(ctl.cfg)))
+    close_t.pack()
+    _l, right, _x = row(pg, '启动时只显示托盘图标', '打开助手时不弹出窗口，只在托盘里运行。')
+    hidden_t = Toggle(right, ctl.cfg.get('start_hidden', False),
+                      lambda on: (ctl.cfg.__setitem__('start_hidden', on), save_config(ctl.cfg)))
+    hidden_t.pack()
     _l, right, _x = row(pg, '一键切换默认修复', '一次开启或关闭下面「默认修复」里的全部补丁，不影响高级选项。', last=True)
     Button(right, '全部关闭', lambda: bg_thread(ctl.set_main, False)).pack(side='right')
     Button(right, '全部开启', lambda: bg_thread(ctl.set_main, True), accent=True).pack(side='right', padx=(0, px(8)))
@@ -1331,6 +1463,7 @@ def run_gui():
             dot.config(fg=AMBER if ctl.readonly else GREEN)
             pill.config(text='已附加（只读）' if ctl.readonly else '已附加')
             status.set(f'PID {ctl.game.pid}\n游戏日期 {date}')
+            info['text'] = f'已附加 · {date}'
             for n in ORDER:
                 state_lbl[n].config(text=labels[st[n]], fg={'on': GREEN, 'off': SUB}.get(st[n], RED))
                 toggles[n].set(ctl.cfg['enabled'][n])
@@ -1351,9 +1484,151 @@ def run_gui():
             dot.config(fg=SUB)
             pill.config(text='等待游戏')
             status.set('启动游戏后自动附加')
+            info['text'] = '等待游戏'
             for n in ORDER:
                 state_lbl[n].config(text='')
+        tray.set_tip('Trend Keeper - ' + info['text'])
         root.after(700, refresh)
+
+    # ---- system tray: icon + dark popup menu in the same style --------------------------------------------------
+    tray_q = queue.Queue()
+    info = {'text': '等待游戏'}
+    menu = {'top': None}
+    icon_file = os.path.join(HERE, 'trend_keeper.ico')
+
+    def open_window():
+        root.deiconify()
+        root.lift()
+        root.attributes('-topmost', True)
+        root.after(250, lambda: root.attributes('-topmost', False))
+        root.focus_force()
+
+    def hide_window():
+        root.withdraw()
+
+    def toggle_window():
+        if root.state() in ('withdrawn', 'iconic'):
+            open_window()
+        else:
+            hide_window()
+
+    tray = Tray(icon_file, 'Trend Keeper', lambda kind, x, y: tray_q.put((kind, x, y)))
+
+    def quit_app():
+        close_menu()
+        tray.stop()
+        root.after(120, root.destroy)
+
+    def close_menu():
+        t = menu['top']
+        menu['top'] = None
+        if t is not None:
+            try:
+                t.destroy()
+            except tk.TclError:
+                pass
+
+    def show_menu(x, y):
+        close_menu()
+        top = tk.Toplevel(root)
+        top.overrideredirect(True)
+        top.attributes('-topmost', True)
+        top.configure(bg='#3a3a3a')
+        menu['top'] = top
+        body = tk.Frame(top, bg='#252525')
+        body.pack(padx=1, pady=1)
+        w_menu = px(250)
+
+        def item(text, command=None, state=None, accent=False):
+            r = tk.Frame(body, bg='#252525', width=w_menu, height=px(40), cursor='hand2' if command else 'arrow')
+            r.pack(fill='x')
+            r.pack_propagate(False)
+            left = tk.Label(r, text=text, bg='#252525', fg='#ececec' if command else SUB, font=F_ROW, anchor='w')
+            left.pack(side='left', padx=(px(16), 0), fill='y')
+            parts = [r, left]
+            if state is not None:
+                on = state
+                right = tk.Label(r, text='已开启' if on else '已关闭', bg='#252525', fg=GREEN if on else SUB, font=F_SUB)
+                right.pack(side='right', padx=(0, px(16)))
+                parts.append(right)
+            if command:
+                def go(e=None):
+                    close_menu()
+                    command()
+                for p in parts:
+                    p.bind('<Button-1>', go)
+                    p.bind('<Enter>', lambda e: [q.config(bg='#363636') for q in parts])
+                    p.bind('<Leave>', lambda e: [q.config(bg='#252525') for q in parts])
+            return r
+
+        def sep():
+            tk.Frame(body, bg='#303030', height=1, width=w_menu).pack(fill='x', padx=px(12), pady=px(3))
+
+        item('●  ' + info['text'])
+        sep()
+        item('打开主窗口', open_window)
+        item('默认修复', lambda: bg_thread(ctl.set_main, not ctl.main_on()), ctl.main_on())
+        item('限制自主投资', lambda: bg_thread(ctl.set, 'cap_investment', not ctl.cfg['enabled']['cap_investment']),
+             ctl.cfg['enabled']['cap_investment'])
+        item('热点采样 30 秒', lambda: (open_window(), do_profile()))
+        sep()
+        item('退出 Trend Keeper', quit_app)
+        top.update_idletasks()
+        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        px_, py_ = min(max(x - w // 2, 4), sw - w - 4), y - h - px(14)
+        if py_ < 4:
+            py_ = min(y + px(14), sh - h - 4)
+        top.geometry(f'+{px_}+{py_}')
+        try:                                                  # rounded corners on Windows 11
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(ctypes.windll.user32.GetParent(top.winfo_id()), 33,
+                                                       ctypes.byref(ctypes.c_int(2)), 4)
+        except Exception:
+            pass
+        top.focus_force()
+        top.bind('<Escape>', lambda e: close_menu())
+
+        def watch():                                          # close when the user clicks anywhere else
+            t = menu['top']
+            if t is not top:
+                return
+            try:
+                down = ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000 or ctypes.windll.user32.GetAsyncKeyState(0x02) & 0x8000
+                pt = wt.POINT()
+                ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+                inside = top.winfo_rootx() <= pt.x <= top.winfo_rootx() + top.winfo_width() and \
+                    top.winfo_rooty() <= pt.y <= top.winfo_rooty() + top.winfo_height()
+                if down and not inside:
+                    close_menu()
+                    return
+                top.after(40, watch)
+            except tk.TclError:
+                pass
+        top.after(300, watch)
+
+    def poll_tray():
+        try:
+            while True:
+                kind, x, y = tray_q.get_nowait()
+                if kind == 'menu':
+                    show_menu(x, y)
+                elif kind == 'open':
+                    close_menu()
+                    toggle_window()
+        except queue.Empty:
+            pass
+        root.after(80, poll_tray)
+
+    def on_close():
+        if ctl.cfg.get('tray_on_close', True) and tray.ok:
+            hide_window()
+        else:
+            quit_app()
+    root.protocol('WM_DELETE_WINDOW', on_close)
+    tray.start()
+    poll_tray()
+    if ctl.cfg.get('start_hidden') and tray.ok:
+        root.withdraw()
 
     show('patch')
     ctl.start()
