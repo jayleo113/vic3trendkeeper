@@ -994,33 +994,81 @@ def run_gui():
         messagebox.showinfo('Trend Keeper', 'Trend Keeper 已经在运行。')
         return
 
+    try:                                            # crisp text on high-DPI screens instead of bitmap scaling
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
     root = tk.Tk()
     root.title('Trend Keeper · 维多利亚3 历史曲线修复')
-    root.geometry('660x600')
+    root.minsize(560, 480)
+    import tkinter.font as tkfont
+    FAM = 'Microsoft YaHei UI'
+    for name, size in (('TkDefaultFont', 10), ('TkTextFont', 10), ('TkMenuFont', 10), ('TkHeadingFont', 10),
+                       ('TkCaptionFont', 10), ('TkTooltipFont', 9)):
+        try:
+            tkfont.nametofont(name).configure(family=FAM, size=size)
+        except tk.TclError:
+            pass
+    F_BODY, F_TITLE, F_DESC, F_STATUS, F_LOG = (FAM, 10), (FAM, 10, 'bold'), (FAM, 9), (FAM, 11, 'bold'), ('Consolas', 10)
+    style = ttk.Style()
+    style.configure('.', font=F_BODY)
+    style.configure('TLabelframe.Label', font=F_TITLE)
+    style.configure('Title.TCheckbutton', font=F_TITLE)
+    style.configure('TButton', padding=(10, 4))
     msgs = queue.Queue()
     ctl = Controller(out=lambda s: msgs.put(time.strftime('%H:%M:%S ') + s))
 
     status = tk.StringVar(value='等待游戏启动……')
-    ttk.Label(root, textvariable=status, font=('Microsoft YaHei UI', 10, 'bold')).pack(anchor='w', padx=12, pady=(10, 4))
+    ttk.Label(root, textvariable=status, font=F_STATUS).pack(anchor='w', padx=14, pady=(12, 6))
 
     vars_, state_lbl = {}, {}
     box = ttk.LabelFrame(root, text='补丁（勾选即时生效，游戏运行中可随时开关）')
-    box.pack(fill='x', padx=12, pady=4)
+    box.pack(fill='x', padx=14, pady=4)
+    descs = []
     for n in ORDER:
         row = ttk.Frame(box)
-        row.pack(fill='x', padx=6, pady=(6, 0))
+        row.pack(fill='x', padx=8, pady=(10, 0))
         v = tk.BooleanVar(value=ctl.cfg['enabled'][n])
         vars_[n] = v
         ttk.Checkbutton(row, text=PATCHES[n]['title'], variable=v,
                         command=lambda n=n: threading.Thread(target=ctl.set, args=(n, vars_[n].get()), daemon=True).start()
-                        ).pack(side='left')
-        state_lbl[n] = ttk.Label(row, text='', width=12)
+                        , style='Title.TCheckbutton').pack(side='left')
+        state_lbl[n] = ttk.Label(row, text='', width=12, anchor='e')
         state_lbl[n].pack(side='right')
-        ttk.Label(box, text=PATCHES[n]['desc'], wraplength=600,
-                  foreground='#555' if PATCHES[n]['default'] else '#a05000').pack(anchor='w', padx=28)
+        d = tk.Text(box, width=1, height=2, wrap='char', font=F_DESC, relief='flat', borderwidth=0, highlightthickness=0,
+                    background=style.lookup('TLabelframe', 'background') or root.cget('bg'), cursor='arrow',
+                    foreground='#4b5563' if PATCHES[n]['default'] else '#92400e')
+        d.insert('1.0', PATCHES[n]['desc'])
+        d.configure(state='disabled')
+        d.pack(fill='x', padx=(32, 12), pady=(2, 2))
+        descs.append(d)
+
+    font_desc = tkfont.Font(family=FAM, size=9)
+
+    def fit(d):
+        """Height of a description = wrapped line count at its current width (measured, char wrapping)."""
+        try:
+            width = d.winfo_width() - 8
+            if width < 120:
+                return
+            text = d.get('1.0', 'end-1c')
+            h = max(1, -(-font_desc.measure(text) // width))
+            if int(d.cget('height')) != h:
+                d.configure(height=h)
+        except tk.TclError:
+            pass
+
+    def rewrap(event=None):
+        for d in descs:
+            fit(d)
+    for d in descs:
+        d.bind('<Configure>', lambda e, d=d: d.after_idle(fit, d))
 
     inv = ttk.Frame(root)
-    inv.pack(fill='x', padx=12, pady=2)
+    inv.pack(fill='x', padx=14, pady=(8, 2))
     ttk.Label(inv, text='自主投资限制：预算').pack(side='left')
     inv_budget = tk.StringVar(value=str(INVEST_BUDGET))
     inv_min = tk.StringVar(value=str(INVEST_MIN))
@@ -1045,11 +1093,11 @@ def run_gui():
                 ctl.out(f'设置失败：{e}')
         threading.Thread(target=run, daemon=True).start()
     ttk.Button(inv, text='应用并清零统计', command=inv_apply).pack(side='left', padx=4)
-    inv_lbl = ttk.Label(inv, text='', foreground='#555')
+    inv_lbl = ttk.Label(inv, text='', foreground='#4b5563', font=F_DESC)
     inv_lbl.pack(side='left', padx=6)
 
     opts = ttk.Frame(root)
-    opts.pack(fill='x', padx=12, pady=6)
+    opts.pack(fill='x', padx=14, pady=(8, 6))
     auto = tk.BooleanVar(value=ctl.cfg['auto_apply'])
 
     def set_auto():
@@ -1089,9 +1137,9 @@ def run_gui():
     ttk.Button(opts, text='热点采样 30s', command=do_profile).pack(side='right', padx=6)
 
     ttk.Label(root, text='快捷键 Ctrl+Alt+F9 开/关修复　|　游戏内：CMF 侧边栏按钮，或控制台 effect tk_toggle = yes',
-              foreground='#555').pack(anchor='w', padx=12)
-    log = scrolledtext.ScrolledText(root, height=14, font=('Consolas', 9))
-    log.pack(fill='both', expand=True, padx=12, pady=8)
+              foreground='#4b5563', font=F_DESC).pack(anchor='w', padx=14)
+    log = scrolledtext.ScrolledText(root, height=8, font=F_LOG, relief='flat', borderwidth=1, padx=6, pady=4)
+    log.pack(fill='both', expand=True, padx=14, pady=(6, 12))
     labels = {'on': '● 已生效', 'off': '○ 未生效', 'mismatch': '× 版本不符', 'unavailable': '× 不可用'}
 
     def refresh():
@@ -1109,7 +1157,7 @@ def run_gui():
                 date = '?'
             status.set(f'已附加 victoria3.exe（PID {ctl.game.pid}）　游戏日期 {date}' + ('　【只读】' if ctl.readonly else ''))
             for n in ORDER:
-                state_lbl[n].config(text=labels[st[n]])
+                state_lbl[n].config(text=labels[st[n]], foreground={'on': '#15803d', 'off': '#6b7280'}.get(st[n], '#b91c1c'))
                 vars_[n].set(ctl.cfg['enabled'][n])
             try:
                 if st.get('cap_investment') == 'on':
@@ -1127,6 +1175,11 @@ def run_gui():
 
     ctl.start()
     refresh()
+    root.update_idletasks()
+    w = int(root.winfo_fpixels('6.8i'))
+    h = min(root.winfo_reqheight() + int(root.winfo_fpixels('0.3i')), int(root.winfo_screenheight() * 0.92))
+    root.geometry(f'{w}x{h}+{max((root.winfo_screenwidth() - w) // 2, 0)}+{max((root.winfo_screenheight() - h) // 3, 0)}')
+    root.after(200, rewrap)
     root.mainloop()
 
 
