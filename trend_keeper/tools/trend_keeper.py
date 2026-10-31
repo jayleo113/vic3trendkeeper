@@ -986,7 +986,8 @@ def single_instance():
 # ================================================================ GUI
 def run_gui():
     import tkinter as tk
-    from tkinter import ttk, scrolledtext, messagebox
+    import tkinter.font as tkfont
+    from tkinter import messagebox
 
     first, _mutex = single_instance()
     if not first:
@@ -1002,81 +1003,215 @@ def run_gui():
         except Exception:
             pass
     root = tk.Tk()
-    root.title('Trend Keeper · 维多利亚3 历史曲线修复')
-    root.minsize(560, 480)
-    import tkinter.font as tkfont
+    root.title('Trend Keeper')
+    S = root.winfo_fpixels('1i') / 96.0
+
+    def px(n):
+        return int(round(n * S))
+
+    # ---- palette / fonts (modelled on a modern dark settings window) -----------------------------------------
+    SIDE, CONTENT, SEP = '#2b2b2b', '#1e1e1e', '#2d2d2d'
+    TXT, SUB, GREEN, GREEN_H = '#ececec', '#8b8b8b', '#0fa968', '#13b874'
+    BTN, BTN_H, OFF, RED, AMBER = '#2f2f2f', '#3b3b3b', '#4a4a4a', '#e5484d', '#e0a43a'
     FAM = 'Microsoft YaHei UI'
-    for name, size in (('TkDefaultFont', 10), ('TkTextFont', 10), ('TkMenuFont', 10), ('TkHeadingFont', 10),
-                       ('TkCaptionFont', 10), ('TkTooltipFont', 9)):
+    F_ROW, F_SUB, F_NAV, F_SEC, F_BTN = (FAM, 11), (FAM, 9), (FAM, 11), (FAM, 10), (FAM, 10)
+    F_LOG = ('Consolas', 10)
+    for name in ('TkDefaultFont', 'TkTextFont', 'TkMenuFont', 'TkHeadingFont', 'TkCaptionFont'):
         try:
-            tkfont.nametofont(name).configure(family=FAM, size=size)
+            tkfont.nametofont(name).configure(family=FAM, size=10)
         except tk.TclError:
             pass
-    F_BODY, F_TITLE, F_DESC, F_STATUS, F_LOG = (FAM, 10), (FAM, 10, 'bold'), (FAM, 9), (FAM, 11, 'bold'), ('Consolas', 10)
-    style = ttk.Style()
-    style.configure('.', font=F_BODY)
-    style.configure('TLabelframe.Label', font=F_TITLE)
-    style.configure('Title.TCheckbutton', font=F_TITLE)
-    style.configure('TButton', padding=(10, 4))
+    root.configure(bg=CONTENT)
+    root.minsize(px(820), px(560))
+    root.update_idletasks()
+    try:                                            # dark title bar on Windows 10/11
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        for attr in (20, 19):
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(ctypes.c_int(1)), 4)
+    except Exception:
+        pass
+
     msgs = queue.Queue()
     ctl = Controller(out=lambda s: msgs.put(time.strftime('%H:%M:%S ') + s))
 
-    status = tk.StringVar(value='等待游戏启动……')
-    ttk.Label(root, textvariable=status, font=F_STATUS).pack(anchor='w', padx=14, pady=(12, 6))
+    # ---- small widgets ----------------------------------------------------------------------------------------
+    class Toggle(tk.Canvas):
+        def __init__(self, parent, on=False, command=None):
+            self.W, self.H = px(44), px(24)
+            super().__init__(parent, width=self.W, height=self.H, bg=CONTENT, highlightthickness=0, cursor='hand2')
+            self.on, self.command = on, command
+            self.bind('<Button-1>', self._click)
+            self._draw()
 
-    vars_, state_lbl = {}, {}
-    box = ttk.LabelFrame(root, text='补丁（勾选即时生效，游戏运行中可随时开关）')
-    box.pack(fill='x', padx=14, pady=4)
+        def _draw(self):
+            self.delete('all')
+            r = self.H // 2
+            col = GREEN if self.on else OFF
+            self.create_oval(0, 0, self.H, self.H, fill=col, outline=col)
+            self.create_oval(self.W - self.H, 0, self.W, self.H, fill=col, outline=col)
+            self.create_rectangle(r, 0, self.W - r, self.H, fill=col, outline=col)
+            k, pad = self.H - px(6), px(3)
+            x = self.W - pad - k if self.on else pad
+            self.create_oval(x, pad, x + k, pad + k, fill='#ffffff', outline='#ffffff')
+
+        def set(self, on):
+            if on != self.on:
+                self.on = on
+                self._draw()
+
+        def _click(self, _e):
+            self.on = not self.on
+            self._draw()
+            if self.command:
+                self.command(self.on)
+
+    class Button(tk.Label):
+        def __init__(self, parent, text, command, accent=False):
+            self.base, self.hover = (GREEN, GREEN_H) if accent else (BTN, BTN_H)
+            super().__init__(parent, text=text, bg=self.base, fg='#ffffff' if accent else TXT, font=F_BTN,
+                             padx=px(16), pady=px(6), cursor='hand2')
+            self.command = command
+            self.bind('<Enter>', lambda e: self.config(bg=self.hover))
+            self.bind('<Leave>', lambda e: self.config(bg=self.base))
+            self.bind('<Button-1>', lambda e: self.command())
+
+    def entry(parent, var, width):
+        return tk.Entry(parent, textvariable=var, width=width, bg='#262626', fg=TXT, insertbackground=TXT,
+                        relief='flat', font=F_BTN, highlightthickness=1, highlightbackground='#3a3a3a',
+                        highlightcolor=GREEN, justify='center')
+
     descs = []
-    for n in ORDER:
-        row = ttk.Frame(box)
-        row.pack(fill='x', padx=8, pady=(10, 0))
-        v = tk.BooleanVar(value=ctl.cfg['enabled'][n])
-        vars_[n] = v
-        ttk.Checkbutton(row, text=PATCHES[n]['title'], variable=v,
-                        command=lambda n=n: threading.Thread(target=ctl.set, args=(n, vars_[n].get()), daemon=True).start()
-                        , style='Title.TCheckbutton').pack(side='left')
-        state_lbl[n] = ttk.Label(row, text='', width=12, anchor='e')
-        state_lbl[n].pack(side='right')
-        d = tk.Text(box, width=1, height=2, wrap='char', font=F_DESC, relief='flat', borderwidth=0, highlightthickness=0,
-                    background=style.lookup('TLabelframe', 'background') or root.cget('bg'), cursor='arrow',
-                    foreground='#4b5563' if PATCHES[n]['default'] else '#92400e')
-        d.insert('1.0', PATCHES[n]['desc'])
-        d.configure(state='disabled')
-        d.pack(fill='x', padx=(32, 12), pady=(2, 2))
-        descs.append(d)
-
-    font_desc = tkfont.Font(family=FAM, size=9)
+    font_sub = tkfont.Font(family=FAM, size=9)
 
     def fit(d):
-        """Height of a description = wrapped line count at its current width (measured, char wrapping)."""
+        """Wrapped height of a description Text (char wrapping works for CJK, Label wrapping does not)."""
         try:
-            width = d.winfo_width() - 8
-            if width < 120:
+            width = d.winfo_width() - 4
+            if width < 80:
                 return
-            text = d.get('1.0', 'end-1c')
-            h = max(1, -(-font_desc.measure(text) // width))
+            h = max(1, -(-font_sub.measure(d.get('1.0', 'end-1c')) // width))
             if int(d.cget('height')) != h:
                 d.configure(height=h)
         except tk.TclError:
             pass
 
-    def rewrap(event=None):
-        for d in descs:
-            fit(d)
-    for d in descs:
+    def sub_text(parent, text, color=SUB):
+        d = tk.Text(parent, width=1, height=1, wrap='char', font=F_SUB, relief='flat', borderwidth=0,
+                    highlightthickness=0, bg=CONTENT, fg=color, cursor='arrow', padx=0, pady=0)
+        d.insert('1.0', text)
+        d.configure(state='disabled')
+        descs.append(d)
         d.bind('<Configure>', lambda e, d=d: d.after_idle(fit, d))
+        return d
 
-    inv = ttk.Frame(root)
-    inv.pack(fill='x', padx=14, pady=(8, 2))
-    ttk.Label(inv, text='自主投资限制：预算').pack(side='left')
+    def bg_thread(fn, *args):
+        threading.Thread(target=fn, args=args, daemon=True).start()
+
+    # ---- layout: sidebar + pages ------------------------------------------------------------------------------
+    side = tk.Frame(root, bg=SIDE, width=px(200))
+    side.pack(side='left', fill='y')
+    side.pack_propagate(False)
+    content = tk.Frame(root, bg=CONTENT)
+    content.pack(side='left', fill='both', expand=True)
+
+    pages, nav_items = {}, {}
+    current = {'name': None}
+
+    def make_page(name):
+        outer = tk.Frame(content, bg=CONTENT)
+        canvas = tk.Canvas(outer, bg=CONTENT, highlightthickness=0)
+        inner = tk.Frame(canvas, bg=CONTENT)
+        win = canvas.create_window((0, 0), window=inner, anchor='nw')
+        canvas.pack(fill='both', expand=True)
+        inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda e: canvas.itemconfigure(win, width=e.width))
+
+        def wheel(e):
+            if inner.winfo_reqheight() > canvas.winfo_height():
+                canvas.yview_scroll(int(-e.delta / 120) * 3, 'units')
+        outer.bind('<Enter>', lambda e: canvas.bind_all('<MouseWheel>', wheel))
+        outer.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'))
+        pages[name] = outer
+        return inner
+
+    def show(name):
+        if current['name']:
+            pages[current['name']].pack_forget()
+            nav_items[current['name']].paint(False)
+        pages[name].pack(fill='both', expand=True)
+        nav_items[name].paint(True)
+        current['name'] = name
+        root.after(60, lambda: [fit(d) for d in descs])
+
+    class Nav(tk.Frame):
+        def __init__(self, parent, icon, text, name):
+            super().__init__(parent, bg=SIDE, cursor='hand2')
+            self.icon = tk.Label(self, text=icon, bg=SIDE, fg=TXT, font=(FAM, 13), width=2)
+            self.text = tk.Label(self, text=text, bg=SIDE, fg=TXT, font=F_NAV, anchor='w')
+            self.icon.pack(side='left', padx=(px(18), px(6)), pady=px(11))
+            self.text.pack(side='left', fill='x', expand=True)
+            self.active = False
+            for w in (self, self.icon, self.text):
+                w.bind('<Button-1>', lambda e, n=name: show(n))
+                w.bind('<Enter>', lambda e: self._bg('#363636') if not self.active else None)
+                w.bind('<Leave>', lambda e: self._bg(SIDE) if not self.active else None)
+
+        def _bg(self, c):
+            for w in (self, self.icon, self.text):
+                w.config(bg=c)
+
+        def paint(self, active):
+            self.active = active
+            self._bg(GREEN if active else SIDE)
+
+    tk.Frame(side, bg=SIDE, height=px(18)).pack()
+    for icon, text, name in (('⚙', '补丁', 'patch'), ('⏱', '诊断与性能', 'diag'), ('☰', '运行日志', 'log'), ('ⓘ', '关于', 'about')):
+        nav_items[name] = Nav(side, icon, text, name)
+        nav_items[name].pack(fill='x')
+
+    # connection status at the bottom of the sidebar
+    stat = tk.Frame(side, bg=SIDE)
+    stat.pack(side='bottom', fill='x', padx=px(18), pady=px(16))
+    dot_row = tk.Frame(stat, bg=SIDE)
+    dot_row.pack(fill='x')
+    dot = tk.Label(dot_row, text='●', bg=SIDE, fg=SUB, font=(FAM, 10))
+    dot.pack(side='left')
+    pill = tk.Label(dot_row, text='等待游戏', bg=SIDE, fg=TXT, font=F_SEC)
+    pill.pack(side='left', padx=(6, 0))
+    status = tk.StringVar(value='启动游戏后自动附加')
+    tk.Label(stat, textvariable=status, bg=SIDE, fg=SUB, font=F_SUB, justify='left', anchor='w',
+             wraplength=px(168)).pack(fill='x', pady=(4, 0))
+
+    # ---- row builder (title + subtitle on the left, control on the right) --------------------------------------
+    def section(parent, text):
+        tk.Label(parent, text=text, bg=CONTENT, fg=SUB, font=F_SEC, anchor='w').pack(
+            fill='x', padx=px(30), pady=(px(26), px(6)))
+
+    def row(parent, title, sub=None, sub_color=SUB, last=False):
+        r = tk.Frame(parent, bg=CONTENT)
+        r.pack(fill='x', padx=px(30))
+        r.grid_columnconfigure(0, weight=1)
+        left = tk.Frame(r, bg=CONTENT)
+        left.grid(row=0, column=0, sticky='ew', pady=px(13))
+        tk.Label(left, text=title, bg=CONTENT, fg=TXT, font=F_ROW, anchor='w', padx=0).pack(fill='x')
+        if sub:
+            sub_text(left, sub, sub_color).pack(fill='x', pady=(px(3), 0))
+        right = tk.Frame(r, bg=CONTENT)
+        right.grid(row=0, column=1, sticky='e', padx=(px(20), 0))
+        extra = tk.Frame(r, bg=CONTENT)
+        extra.grid(row=1, column=0, columnspan=2, sticky='ew')
+        if not last:
+            tk.Frame(parent, bg=SEP, height=1).pack(fill='x', padx=px(30))
+        return left, right, extra
+
+    # ---- page: patches ------------------------------------------------------------------------------------------
+    pg = make_page('patch')
+    vars_, toggles, state_lbl = {}, {}, {}
     inv_budget = tk.StringVar(value=str(INVEST_BUDGET))
     inv_min = tk.StringVar(value=str(INVEST_MIN))
-    ttk.Entry(inv, textvariable=inv_budget, width=8).pack(side='left', padx=3)
-    ttk.Label(inv, text='最小').pack(side='left')
-    ttk.Entry(inv, textvariable=inv_min, width=4).pack(side='left', padx=3)
+    inv_lbl = {'w': None}
 
-    def inv_apply(reset=False):
+    def inv_apply():
         def run():
             with ctl.lock:
                 g = ctl.game
@@ -1084,28 +1219,44 @@ def run_gui():
                 ctl.out('游戏未运行或处于只读模式')
                 return
             try:
-                if reset and not inv_budget.get().strip():
-                    g.invest_set(reset_stats=True)
-                else:
-                    g.invest_set(int(inv_budget.get()), int(inv_min.get()), reset_stats=True)
+                g.invest_set(int(inv_budget.get()), int(inv_min.get()), reset_stats=True)
                 ctl.out('已更新自主投资限制参数并清零统计（无需重启游戏）')
             except (ValueError, OSError, RuntimeError) as e:
                 ctl.out(f'设置失败：{e}')
-        threading.Thread(target=run, daemon=True).start()
-    ttk.Button(inv, text='应用并清零统计', command=inv_apply).pack(side='left', padx=4)
-    inv_lbl = ttk.Label(inv, text='', foreground='#4b5563', font=F_DESC)
-    inv_lbl.pack(side='left', padx=6)
+        bg_thread(run)
 
-    opts = ttk.Frame(root)
-    opts.pack(fill='x', padx=14, pady=(8, 6))
-    auto = tk.BooleanVar(value=ctl.cfg['auto_apply'])
+    section(pg, '通用')
+    _l, right, _x = row(pg, '游戏启动后自动应用', '助手窗口打开后，检测到游戏就自动附加并应用已开启的补丁。')
+    auto_t = Toggle(right, ctl.cfg['auto_apply'], lambda on: (ctl.cfg.__setitem__('auto_apply', on), save_config(ctl.cfg)))
+    auto_t.pack()
+    _l, right, _x = row(pg, '一键切换默认修复', '一次开启或关闭下面「默认修复」里的全部补丁，不影响高级选项。', last=True)
+    Button(right, '全部关闭', lambda: bg_thread(ctl.set_main, False)).pack(side='right')
+    Button(right, '全部开启', lambda: bg_thread(ctl.set_main, True), accent=True).pack(side='right', padx=(0, px(8)))
 
-    def set_auto():
-        ctl.cfg['auto_apply'] = auto.get()
-        save_config(ctl.cfg)
-    ttk.Checkbutton(opts, text='游戏启动后自动应用', variable=auto, command=set_auto).pack(side='left')
-    ttk.Button(opts, text='修复全开', command=lambda: threading.Thread(target=ctl.set_main, args=(True,), daemon=True).start()).pack(side='left', padx=6)
-    ttk.Button(opts, text='修复全关', command=lambda: threading.Thread(target=ctl.set_main, args=(False,), daemon=True).start()).pack(side='left')
+    for title, names in (('默认修复', [n for n in ORDER if PATCHES[n]['default']]),
+                         ('高级选项（默认关闭，会占内存或改变游戏模拟）', [n for n in ORDER if not PATCHES[n]['default']])):
+        section(pg, title)
+        for i, n in enumerate(names):
+            _l, right, extra = row(pg, PATCHES[n]['title'], PATCHES[n]['desc'],
+                                   SUB if PATCHES[n]['default'] else AMBER, last=(i == len(names) - 1))
+            state_lbl[n] = tk.Label(right, text='', bg=CONTENT, fg=SUB, font=F_SUB)
+            state_lbl[n].pack(side='left', padx=(0, px(12)))
+            t = Toggle(right, ctl.cfg['enabled'][n], lambda on, n=n: bg_thread(ctl.set, n, on))
+            t.pack(side='left')
+            toggles[n] = t
+            if n == 'cap_investment':
+                tk.Label(extra, text='预算', bg=CONTENT, fg=SUB, font=F_SUB).pack(side='left')
+                entry(extra, inv_budget, 9).pack(side='left', padx=(px(6), px(16)), ipady=px(3))
+                tk.Label(extra, text='最小', bg=CONTENT, fg=SUB, font=F_SUB).pack(side='left')
+                entry(extra, inv_min, 4).pack(side='left', padx=(px(6), px(16)), ipady=px(3))
+                Button(extra, '应用并清零统计', inv_apply).pack(side='left')
+                inv_lbl['w'] = tk.Label(extra, text='', bg=CONTENT, fg=SUB, font=F_SUB)
+                inv_lbl['w'].pack(side='left', padx=px(14))
+                tk.Frame(extra, bg=CONTENT, height=px(10)).pack()
+    tk.Frame(pg, bg=CONTENT, height=px(24)).pack()
+
+    # ---- page: diagnostics --------------------------------------------------------------------------------------
+    pd = make_page('diag')
 
     def do_bench():
         def run():
@@ -1119,8 +1270,8 @@ def run_gui():
                 bench(g, 60, '当前设置', out=ctl.out)
             except OSError as e:
                 ctl.out(f'测试失败：{e}')
-        threading.Thread(target=run, daemon=True).start()
-    ttk.Button(opts, text='性能测试 60s', command=do_bench).pack(side='right')
+        bg_thread(run)
+        show('log')
 
     def do_profile():
         def run():
@@ -1133,14 +1284,36 @@ def run_gui():
                 profile(g, 30, 15, out=ctl.out)
             except OSError as e:
                 ctl.out(f'采样失败：{e}')
-        threading.Thread(target=run, daemon=True).start()
-    ttk.Button(opts, text='热点采样 30s', command=do_profile).pack(side='right', padx=6)
+        bg_thread(run)
+        show('log')
 
-    ttk.Label(root, text='快捷键 Ctrl+Alt+F9 开/关修复　|　游戏内：CMF 侧边栏按钮，或控制台 effect tk_toggle = yes',
-              foreground='#4b5563', font=F_DESC).pack(anchor='w', padx=14)
-    log = scrolledtext.ScrolledText(root, height=8, font=F_LOG, relief='flat', borderwidth=1, padx=6, pady=4)
-    log.pack(fill='both', expand=True, padx=14, pady=(6, 12))
-    labels = {'on': '● 已生效', 'off': '○ 未生效', 'mismatch': '× 版本不符', 'unavailable': '× 不可用'}
+    section(pd, '诊断工具')
+    _l, right, _x = row(pd, '热点采样 30 秒',
+                        '只读。卡顿时每约 15 毫秒记录一次各线程正在执行的函数，给出自主投资相关函数的占比和最忙的线程。游戏每次只暂停几百微秒。结果显示在「运行日志」。')
+    Button(right, '开始', do_profile, accent=True).pack()
+    _l, right, _x = row(pd, '性能测试 60 秒',
+                        '统计 60 秒内的游戏速度和 CPU 占用。请保持同一游戏速度、不要暂停。比较补丁开关的效果请用命令行 compare。', last=True)
+    Button(right, '开始', do_bench, accent=True).pack()
+    section(pd, '快捷操作')
+    row(pd, '快捷键', 'Ctrl+Alt+F9：开/关修复。游戏内：CMF 侧边栏按钮，或控制台  effect tk_toggle = yes。', last=True)
+
+    # ---- page: log ----------------------------------------------------------------------------------------------
+    pl = tk.Frame(content, bg=CONTENT)
+    pages['log'] = pl
+    tk.Label(pl, text='运行日志', bg=CONTENT, fg=SUB, font=F_SEC, anchor='w').pack(fill='x', padx=px(30), pady=(px(26), px(8)))
+    log = tk.Text(pl, bg='#191919', fg='#d4d4d4', font=F_LOG, relief='flat', borderwidth=0, highlightthickness=0,
+                  padx=px(12), pady=px(10), wrap='word', insertbackground=TXT)
+    log.pack(fill='both', expand=True, padx=px(30), pady=(0, px(24)))
+    log.bind('<MouseWheel>', lambda e: log.yview_scroll(int(-e.delta / 120) * 3, 'units'))
+
+    # ---- page: about --------------------------------------------------------------------------------------------
+    pa = make_page('about')
+    section(pa, '关于')
+    row(pa, 'Trend Keeper', f'只修改运行中的游戏内存，不改动 victoria3.exe；关掉助手或重启游戏即恢复原样。已测试版本 {TESTED_VERSION}。')
+    row(pa, '作用范围', '改动的都是仅供界面展示的趋势数据，不参与游戏逻辑和联机同步。唯一例外是「限制自主投资」，它会改变模拟结果。', last=True)
+
+    # ---- refresh loop -------------------------------------------------------------------------------------------
+    labels = {'on': '已生效', 'off': '未生效', 'mismatch': '版本不符', 'unavailable': '不可用'}
 
     def refresh():
         while not msgs.empty():
@@ -1154,32 +1327,40 @@ def run_gui():
             try:
                 date = hours_to_date(ctl.game.clock_hours())
             except OSError:
-                date = '?'
-            status.set(f'已附加 victoria3.exe（PID {ctl.game.pid}）　游戏日期 {date}' + ('　【只读】' if ctl.readonly else ''))
+                date = '—'
+            dot.config(fg=AMBER if ctl.readonly else GREEN)
+            pill.config(text='已附加（只读）' if ctl.readonly else '已附加')
+            status.set(f'PID {ctl.game.pid}\n游戏日期 {date}')
             for n in ORDER:
-                state_lbl[n].config(text=labels[st[n]], foreground={'on': '#15803d', 'off': '#6b7280'}.get(st[n], '#b91c1c'))
-                vars_[n].set(ctl.cfg['enabled'][n])
+                state_lbl[n].config(text=labels[st[n]], fg={'on': GREEN, 'off': SUB}.get(st[n], RED))
+                toggles[n].set(ctl.cfg['enabled'][n])
+            auto_t.set(ctl.cfg['auto_apply'])
+            w = inv_lbl['w']
             try:
-                if st.get('cap_investment') == 'on':
-                    v = ctl.game.invest_get()
-                    inv_lbl.config(text=f"国家次数 {v['calls']}　被限制 {v['throttled']}　最大潜在建筑 {v['max_p']}　原版最大落地 {v['max_n']}")
-                else:
-                    inv_lbl.config(text='（补丁未开启）')
+                if w is not None:
+                    if st.get('cap_investment') == 'on':
+                        v = ctl.game.invest_get()
+                        w.config(text=f"次数 {v['calls']} · 被限制 {v['throttled']} · "
+                                      f"最大潜在建筑 {v['max_p']} · 原版最大落地 {v['max_n']}")
+                    else:
+                        w.config(text='补丁未开启')
             except (OSError, RuntimeError):
-                inv_lbl.config(text='')
+                if w is not None:
+                    w.config(text='')
         else:
-            status.set('等待游戏启动……（启动后自动附加）')
+            dot.config(fg=SUB)
+            pill.config(text='等待游戏')
+            status.set('启动游戏后自动附加')
             for n in ORDER:
                 state_lbl[n].config(text='')
         root.after(700, refresh)
 
+    show('patch')
     ctl.start()
     refresh()
     root.update_idletasks()
-    w = int(root.winfo_fpixels('6.8i'))
-    h = min(root.winfo_reqheight() + int(root.winfo_fpixels('0.3i')), int(root.winfo_screenheight() * 0.92))
-    root.geometry(f'{w}x{h}+{max((root.winfo_screenwidth() - w) // 2, 0)}+{max((root.winfo_screenheight() - h) // 3, 0)}')
-    root.after(200, rewrap)
+    w, h = px(980), min(px(760), int(root.winfo_screenheight() * 0.92))
+    root.geometry(f'{w}x{h}+{max((root.winfo_screenwidth() - w) // 2, 0)}+{max((root.winfo_screenheight() - h) // 4, 0)}')
     root.mainloop()
 
 
