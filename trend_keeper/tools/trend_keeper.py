@@ -187,6 +187,17 @@ def resolve_track_pops(img):
     ]
 
 
+def resolve_track_all_states(img):
+    # CTrendManager::Update, first loop: for every state it looks up the owner country's trend status and only calls the
+    # state/building trend update (0x140ea17c0) when the status is 1 or 2 (tracked). Make the final `jne skip` fall through.
+    a = img.find_one('41 3b 96 ec 00 00 00 73 ?? 49 8b 86 e0 00 00 00 44 8b 04 90 41 83 f8 01 74 06 41 83 f8 02 '
+                     '75 0b 48 8b d3 48 8b ce e8', 'CTrendManager::Update 州循环')
+    site = a + 0x1e
+    if img.bytes_at(site, 2)[0] != 0x75:
+        raise LookupError('CTrendManager::Update 州循环：跳转指令不符')
+    return [(site, img.bytes_at(site, 2), bytes.fromhex('9090'), False)]
+
+
 YEARS_100, YEARS_10 = 0x23A50, 0x3908       # trend length in 6-hour ticks (146000 = 100 years)
 
 
@@ -305,6 +316,12 @@ PATCHES = {
         'desc': '原版只有国家 ID 能被 7 整除的 AI 才记录人口/阶层/激进/忠诚曲线。修复后所有国家每周记录，观察者模式可看全时间线。',
         'resolve': resolve_fix_pop_stats, 'default': True,
     },
+    'track_all_states': {
+        'title': '所有国家的州和建筑曲线持续记录（修复观察者模式下停更）',
+        'desc': '原版只给「被跟踪」的国家（你扮演的或正在观察的）记录州、建筑的曲线。观察者模式下其它国家的建筑曲线会在离开那天停止更新。'
+                '开启后所有国家的州、建筑曲线每周继续记录；原版只保留最近 1 年。会多占一些内存。',
+        'resolve': resolve_track_all_states, 'default': True,
+    },
     'extend_saved': {
         'title': '延长存档曲线：激进/忠诚人口、利益集团影响力 → 100 年',
         'desc': '原版只保留 10 年（利益集团激进/忠诚只有 1 年，延长到 10 年）。内存约 +48 MB，存档每年约 +0.5 MB。'
@@ -330,7 +347,7 @@ PATCHES = {
         'resolve': resolve_track_pops, 'default': False,
     },
 }
-ORDER = ['keep_history', 'fix_pop_stats', 'extend_saved', 'extend_budget', 'cap_investment', 'track_pops']
+ORDER = ['keep_history', 'fix_pop_stats', 'track_all_states', 'extend_saved', 'extend_budget', 'cap_investment', 'track_pops']
 DEFAULT_CONFIG = {'enabled': {n: PATCHES[n]['default'] for n in ORDER}, 'auto_apply': True, 'hotkey': True,
                   'tray_on_close': True, 'start_hidden': False}
 
@@ -832,7 +849,7 @@ def bench(game, seconds, label='', out=print):
 
 # ================================================================ controller (daemon / GUI core)
 COVERAGE_PATH = os.path.join(HERE, 'trend_keeper_coverage.json')
-COVERAGE_PATCHES = ('keep_history', 'fix_pop_stats')       # the patches that decide which dates keep their curves
+COVERAGE_PATCHES = ('keep_history', 'fix_pop_stats', 'track_all_states')       # the patches that decide which dates keep their curves
 SAME_SAVE_GAP = 14 * 24                                     # hours: a clock inside [start, end + gap] is treated as the same save
 
 
