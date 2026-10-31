@@ -742,7 +742,8 @@ def profile(game, seconds=30, interval_ms=15, out=print, top=22):
     for va, (length, label) in PROFILE_ROOTS.items():
         roots[(game.base + va - img.base, game.base + va - img.base + length)] = label
     selfc, incl = collections.Counter(), collections.Counter()
-    busy = total = outside = 0
+    busy = total = outside = iters = 0
+    per = collections.defaultdict(lambda: [0, 0, collections.Counter(), collections.Counter()])   # tid -> samples, busy, self, labels
     end = time.time() + seconds
     out(f'采样 {seconds:.0f} 秒（每 {interval_ms} ms 一次，只读）……请保持游戏在卡顿的状态下运行')
     while time.time() < end:
@@ -760,6 +761,7 @@ def profile(game, seconds=30, interval_ms=15, out=print, top=22):
                         continue
         finally:
             ntdll.NtResumeProcess(game.h)
+        iters += 1
         for tid, rip, rsp in samples:
             total += 1
             hits = set()
@@ -772,11 +774,16 @@ def profile(game, seconds=30, interval_ms=15, out=print, top=22):
             if text_lo <= rip < text_hi:
                 busy += 1
                 i = bisect.bisect_right(img.fstarts, rip - game.base) - 1
-                selfc[hex(game.base + img.funcs[i][0]) if i >= 0 else '?'] += 1
+                fn = hex(game.base + img.funcs[i][0]) if i >= 0 else '?'
+                selfc[fn] += 1
+                per[tid][1] += 1
+                per[tid][2][fn] += 1
             else:
                 outside += 1
+            per[tid][0] += 1
             for h in hits:
                 incl[h] += 1
+                per[tid][3][h] += 1
         time.sleep(interval_ms / 1000)
     n = max(total, 1)
     out(f'共 {total} 个线程样本；其中在游戏代码里 {busy}（{busy / n:.0%}），在系统/等待里 {outside}（{outside / n:.0%}）')
@@ -788,6 +795,13 @@ def profile(game, seconds=30, interval_ms=15, out=print, top=22):
     out('—— 自身占比最高的函数（运行时地址）——')
     for a, c in selfc.most_common(top):
         out(f'  {c / n:6.1%}  {a}  (RVA {int(a, 16) - game.base:#x})')
+    out(f'—— 最忙的线程（共 {iters} 轮采样；占比 = 该线程在游戏代码里的轮数 / 总轮数）——')
+    for tid, (smp, bz, sc, lc) in sorted(per.items(), key=lambda kv: -kv[1][1])[:5]:
+        out(f'  线程 {tid}: 在游戏代码里 {bz / max(iters, 1):.0%}')
+        for a, c in sc.most_common(4):
+            out(f'      自身 {c / max(iters, 1):5.1%}  {a} (RVA {int(a, 16) - game.base:#x})')
+        for l, c in lc.most_common(3):
+            out(f'      含调用 {c / max(iters, 1):5.1%}  {l.strip()}')
     return {'total': total, 'busy': busy, 'incl': dict(incl), 'self': dict(selfc)}
 
 
