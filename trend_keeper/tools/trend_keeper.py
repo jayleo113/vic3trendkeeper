@@ -1804,6 +1804,8 @@ def run_gui():
     show('patch')
     ctl.start()
     refresh()
+    if not ctl.cfg.get('start_hidden'):
+        root.state('normal')                                     # a launcher may have asked for a minimized start
     root.update_idletasks()
     w, h = px(980), min(px(760), int(root.winfo_screenheight() * 0.92))
     root.geometry(f'{w}x{h}+{max((root.winfo_screenwidth() - w) // 2, 0)}+{max((root.winfo_screenheight() - h) // 4, 0)}')
