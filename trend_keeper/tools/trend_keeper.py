@@ -38,6 +38,7 @@ Usage:
   python  trend_keeper.py selftest     resolve every patch against the exe on disk (no game needed)
   python  trend_keeper.py bench SECONDS
   python  trend_keeper.py compare SECONDS [NAME..]   A/B/A benchmark (default: fix_pop_stats)
+  python  trend_keeper.py coverage                  game dates the history patches covered per save
   python  trend_keeper.py profile [SECONDS [MS]]    read-only hotspot sampler (is the lag in autonomous investment?)
   python  trend_keeper.py invest [set BUDGET [MIN] | reset]   cap_investment stats / live parameters (no restart)
   python  trend_keeper.py daemon       headless: auto-apply, hotkey, in-game button
@@ -830,6 +831,117 @@ def bench(game, seconds, label='', out=print):
 
 
 # ================================================================ controller (daemon / GUI core)
+COVERAGE_PATH = os.path.join(HERE, 'trend_keeper_coverage.json')
+COVERAGE_PATCHES = ('keep_history', 'fix_pop_stats')       # the patches that decide which dates keep their curves
+SAME_SAVE_GAP = 14 * 24                                     # hours: a clock inside [start, end + gap] is treated as the same save
+
+
+def span_text(a, b):
+    """'1963.2.11 → 1963.11.2 · 8 个月' (game dates; a, b in game hours)."""
+    days = max((b - a) // 24, 0)
+    if days < 31:
+        length = f'{days} 天'
+    elif days < 365:
+        length = f'{days // 30} 个月'
+    else:
+        length = f'{days // 365} 年' + (f' {days % 365 // 30} 个月' if days % 365 >= 30 else '')
+    return f'{hours_to_date(a)} → {hours_to_date(b)} · {length}'
+
+
+class Coverage:
+    """Which game dates of the current save were recorded while the history patches were on.
+
+    The game does not expose the save's identity, so a "save" is a stretch of continuous game clock: a clock that jumps
+    backwards or by more than 20 days (a save was loaded) starts a new segment, unless it lands inside an earlier segment
+    (re-loading the same save after a helper or game restart). Segments live in trend_keeper_coverage.json."""
+
+    def __init__(self, path=COVERAGE_PATH):
+        self.path = path
+        self.segments = []
+        self.cur = None                    # the active segment (a dict inside self.segments)
+        self.open = {}                     # patch -> the range currently being extended
+        self.last_h = None
+        self.dirty, self.saved_at = False, 0.0
+        try:
+            with open(path, encoding='utf-8') as f:
+                self.segments = json.load(f).get('segments', [])
+        except (OSError, ValueError):
+            pass
+
+    def _find(self, h):
+        for seg in reversed(self.segments):
+            if seg['start'] <= h <= seg['end'] + SAME_SAVE_GAP:
+                return seg
+        return None
+
+    def _switch(self, h):
+        self.open = {}
+        self.cur = self._find(h)
+        if self.cur is None:
+            self.cur = {'start': h, 'end': h, 'ranges': {n: [] for n in COVERAGE_PATCHES}}
+            self.segments.append(self.cur)
+            del self.segments[:-20]
+        self.dirty = True
+
+    def tick(self, h, states):
+        if self.cur is None or self.last_h is None or h < self.last_h - 24 or h > self.last_h + 20 * 24:
+            self._switch(h)
+        self.last_h = h
+        if h > self.cur['end']:
+            self.cur['end'] = h
+            self.dirty = True
+        for n in COVERAGE_PATCHES:
+            if states.get(n) == 'on':
+                r = self.open.get(n)
+                if r is None:
+                    r = [h, h]
+                    self.cur['ranges'].setdefault(n, []).append(r)
+                    self.open[n] = r
+                    self.dirty = True
+                elif h > r[1]:
+                    r[1] = h
+                    self.dirty = True
+            elif n in self.open:
+                del self.open[n]
+        if self.dirty and time.time() - self.saved_at > 20:
+            self.save()
+
+    def detach(self):
+        """The game exited: close the open ranges and write the file."""
+        self.open, self.cur, self.last_h = {}, None, None
+        self.save()
+
+    def save(self):
+        try:
+            tmp = self.path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump({'segments': self.segments}, f)
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+        self.dirty, self.saved_at = False, time.time()
+
+    def stretches(self, patch='keep_history'):
+        """Merged [(start, end)] dates the patch covered in the current save (holes longer than the gap stay separate)."""
+        if self.cur is None:
+            return []
+        out = []
+        for s, e in sorted(self.cur['ranges'].get(patch, [])):
+            if out and s <= out[-1][1] + SAME_SAVE_GAP:
+                out[-1][1] = max(out[-1][1], e)
+            else:
+                out.append([s, e])
+        return [tuple(x) for x in out]
+
+    def summary(self, patch='keep_history'):
+        """The latest continuous stretch, or None."""
+        st = self.stretches(patch)
+        return st[-1] if st else None
+
+    def current(self):
+        return None if self.cur is None else (self.cur['start'], self.cur['end'])
+
+
 class Controller:
     def __init__(self, out=print):
         self.cfg = load_config()
@@ -841,6 +953,7 @@ class Controller:
         self.log_pos = {}
         self.last_attach_error = None
         self.readonly = False
+        self.cov = Coverage()
 
     def poll(self):
         with self.lock:
@@ -848,6 +961,7 @@ class Controller:
                 self.out('游戏已退出，等待下次启动……')
                 self.game.close()
                 self.game = None
+                self.cov.detach()
             if self.game:
                 return
             pid = find_pid()
@@ -959,12 +1073,23 @@ class Controller:
             if msg.message == WM_HOTKEY:
                 self.cmds.put('toggle')
 
+    def track_coverage(self):
+        with self.lock:
+            g = self.game
+            if not g:
+                return
+            try:
+                self.cov.tick(g.clock_hours(), all_states(g))
+            except OSError:
+                pass                                # the clock is unreadable while a save loads
+
     def worker(self):
         while not self.stop.is_set():
             try:
                 self.poll()
                 if self.game:
                     self.scan_logs()
+                    self.track_coverage()
                 while not self.cmds.empty():
                     if self.cmds.get_nowait() == 'toggle':
                         self.set_main(not self.main_on())
@@ -1349,6 +1474,15 @@ def run_gui():
                 ctl.out(f'设置失败：{e}')
         bg_thread(run)
 
+    section(pg, '当前存档')
+    cov_lbl = {}
+    for key, title, sub in (
+            ('keep_history', '曲线保留范围',
+             '补丁开启期间，切换或放弃国家都不会清空它的曲线。此前已被原版清空的数据无法找回。'),
+            ('fix_pop_stats', '全国家人口曲线范围', '这段时间内，所有国家都在记录人口、阶层、激进和忠诚曲线。')):
+        _l, right, _x = row(pg, title, sub, last=(key == 'fix_pop_stats'))
+        cov_lbl[key] = tk.Label(right, text='—', bg=CONTENT, fg=SUB, font=F_ROW, anchor='e', justify='right')
+        cov_lbl[key].pack()
     section(pg, '通用')
     _l, right, _x = row(pg, '游戏启动后自动应用', '助手窗口打开后，检测到游戏就自动附加并应用已开启的补丁。')
     auto_t = Toggle(right, ctl.cfg['auto_apply'], lambda on: (ctl.cfg.__setitem__('auto_apply', on), save_config(ctl.cfg)))
@@ -1464,6 +1598,21 @@ def run_gui():
             pill.config(text='已附加（只读）' if ctl.readonly else '已附加')
             status.set(f'PID {ctl.game.pid}\n游戏日期 {date}')
             info['text'] = f'已附加 · {date}'
+            try:
+                for key, lab in cov_lbl.items():
+                    st_list = ctl.cov.stretches(key)
+                    if not st_list:
+                        lab.config(text='尚未记录' if st[key] == 'on' else '补丁未开启', fg=SUB)
+                    else:
+                        lab.config(text='\n'.join(span_text(a, b) for a, b in st_list[-3:]), fg=GREEN if st[key] == 'on' else TXT)
+                kh = ctl.cov.summary('keep_history')
+                if kh:
+                    status.set(f'PID {ctl.game.pid}\n游戏日期 {date}\n曲线保留自 {hours_to_date(kh[0])}')
+                    info['kept'] = f'曲线保留自 {hours_to_date(kh[0])}'
+                else:
+                    info['kept'] = ''
+            except Exception:
+                pass
             for n in ORDER:
                 state_lbl[n].config(text=labels[st[n]], fg={'on': GREEN, 'off': SUB}.get(st[n], RED))
                 toggles[n].set(ctl.cfg['enabled'][n])
@@ -1485,6 +1634,9 @@ def run_gui():
             pill.config(text='等待游戏')
             status.set('启动游戏后自动附加')
             info['text'] = '等待游戏'
+            info['kept'] = ''
+            for lab in cov_lbl.values():
+                lab.config(text='—', fg=SUB)
             for n in ORDER:
                 state_lbl[n].config(text='')
         tray.set_tip('Trend Keeper - ' + info['text'])
@@ -1492,7 +1644,7 @@ def run_gui():
 
     # ---- system tray: icon + dark popup menu in the same style --------------------------------------------------
     tray_q = queue.Queue()
-    info = {'text': '等待游戏'}
+    info = {'text': '等待游戏', 'kept': ''}
     menu = {'top': None}
     icon_file = os.path.join(HERE, 'trend_keeper.ico')
 
@@ -1565,6 +1717,8 @@ def run_gui():
             tk.Frame(body, bg='#303030', height=1, width=w_menu).pack(fill='x', padx=px(12), pady=px(3))
 
         item('●  ' + info['text'])
+        if info.get('kept'):
+            item('    ' + info['kept'])
         sep()
         item('打开主窗口', open_window)
         item('默认修复', lambda: bg_thread(ctl.set_main, not ctl.main_on()), ctl.main_on())
@@ -1757,6 +1911,15 @@ def main(argv):
                   f"见过的最大潜在建筑数 {st['max_p']}，原版最大落地次数 {st['max_n']}")
         elif cmd == 'profile':
             profile(g, float(argv[1]) if len(argv) > 1 else 30, float(argv[2]) if len(argv) > 2 else 15)
+        elif cmd == 'coverage':
+            cov = Coverage()
+            for i, seg in enumerate(cov.segments[-10:], 1):
+                print(f"存档段 {i}：游戏时钟 {hours_to_date(seg['start'])} → {hours_to_date(seg['end'])}")
+                for n in COVERAGE_PATCHES:
+                    for a, b in sorted(seg['ranges'].get(n, [])):
+                        print(f'    {n:14s} {span_text(a, b)}')
+            if not cov.segments:
+                print('还没有记录：助手在游戏运行并附加后才开始记录')
         elif cmd == 'bench':
             bench(g, float(argv[1]) if len(argv) > 1 else 60, 'bench')
         elif cmd == 'compare':
