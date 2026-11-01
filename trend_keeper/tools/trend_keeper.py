@@ -38,6 +38,7 @@ Usage:
   python  trend_keeper.py selftest     resolve every patch against the exe on disk (no game needed)
   python  trend_keeper.py bench SECONDS
   python  trend_keeper.py compare SECONDS [NAME..]   A/B/A benchmark (default: fix_pop_stats)
+  python  trend_keeper.py version | shortcut        print the version / create the desktop shortcut
   python  trend_keeper.py coverage                  game dates the history patches covered per save
   python  trend_keeper.py profile [SECONDS [MS]]    read-only hotspot sampler (is the lag in autonomous investment?)
   python  trend_keeper.py invest [set BUDGET [MIN] | reset]   cap_investment stats / live parameters (no restart)
@@ -56,7 +57,43 @@ import time
 
 GAME_EXE = 'victoria3.exe'
 TESTED_VERSION = '1.14.5'
-DEFAULT_EXE = r'G:\SteamLibrary\steamapps\common\Victoria 3\binaries\victoria3.exe'
+__version__ = '4.0.0'
+LEGACY_EXE = r'G:\SteamLibrary\steamapps\common\Victoria 3\binaries\victoria3.exe'
+
+
+def find_exe():
+    """victoria3.exe for the offline selftest: $VIC3_EXE, then the running game, then the Steam libraries."""
+    env = os.environ.get('VIC3_EXE')
+    if env and os.path.isfile(env):
+        return env
+    try:
+        pid = find_pid()
+        if pid:
+            g = Game(pid)
+            try:
+                return g.path
+            finally:
+                g.close()
+    except Exception:
+        pass
+    roots = []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Valve\Steam') as k:
+            roots.append(winreg.QueryValueEx(k, 'SteamPath')[0])
+    except Exception:
+        pass
+    for root in list(roots):                       # extra library folders listed by Steam
+        try:
+            with open(os.path.join(root, 'steamapps', 'libraryfolders.vdf'), encoding='utf-8', errors='replace') as f:
+                roots += [m.replace('\\\\', '\\') for m in re.findall(r'"path"\s+"([^"]+)"', f.read())]
+        except OSError:
+            pass
+    for root in roots:
+        exe = os.path.join(root, 'steamapps', 'common', 'Victoria 3', 'binaries', 'victoria3.exe')
+        if os.path.isfile(exe):
+            return exe
+    return LEGACY_EXE
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, 'trend_keeper_config.json')
 LOG_DIR = os.path.join(os.path.expanduser('~'), 'Documents', 'Paradox Interactive', 'Victoria 3', 'logs')
@@ -237,8 +274,8 @@ def resolve_extend_budget(img):
         raise LookupError(f'CBudget ctor: 只找到 {len(sites)} 条预算曲线')
     return sites
 
-INVEST_BUDGET = 20000   # work units (placements x potential buildings) a country may spend per weekly task
-INVEST_MIN = 3          # never fewer than this many placements per country per task
+INVEST_BUDGET = 1500    # work units (placements x potential buildings) a country may spend per weekly task
+INVEST_MIN = 4          # never fewer than this many placements per country per task
 EXTRA_SIZE = 0x1000
 INV_DATA = 0x100        # offset of the data area inside the helper-allocated block (code sits at offset 0)
 INV_FIELDS = ('budget', 'min', 'calls', 'throttled', 'max_p', 'max_n')   # u32 each, from INV_DATA
@@ -337,7 +374,7 @@ PATCHES = {
     'cap_investment': {
         'title': '（高级）限制自主投资每周落地次数（缓解后期卡顿）',
         'desc': '自主投资每落地一笔都会重扫该国全部潜在建筑，开销约 落地笔数×潜在建筑数。开启后每国每周最多落地 '
-                'max(最小值, 预算÷潜在建筑数) 笔（默认预算 20000、最小 3；配置项 invest_budget / invest_min）：小国不受影响，'
+                'max(最小值, 预算÷潜在建筑数) 笔（默认预算 1500、最小 4，未经长期验证；配置项 invest_budget / invest_min）：小国不受影响，'
                 '只限制超大建造力的国家，超出的资金留到下周。前几笔与原版相同，但会改变模拟结果，联机必须所有人同样开启。默认关闭。',
         'resolve': resolve_cap_investment, 'default': False,
     },
@@ -1472,7 +1509,7 @@ def run_gui():
 
     # ---- page: patches ------------------------------------------------------------------------------------------
     pg = make_page('patch')
-    vars_, toggles, state_lbl = {}, {}, {}
+    toggles, state_lbl = {}, {}
     inv_budget = tk.StringVar(value=str(INVEST_BUDGET))
     inv_min = tk.StringVar(value=str(INVEST_MIN))
     inv_lbl = {'w': None}
@@ -1592,7 +1629,7 @@ def run_gui():
     # ---- page: about --------------------------------------------------------------------------------------------
     pa = make_page('about')
     section(pa, '关于')
-    row(pa, 'Trend Keeper', f'只修改运行中的游戏内存，不改动 victoria3.exe；关掉助手或重启游戏即恢复原样。已测试版本 {TESTED_VERSION}。')
+    row(pa, f'Trend Keeper {__version__}', f'只修改运行中的游戏内存，不改动 victoria3.exe；关掉助手或重启游戏即恢复原样。已测试版本 {TESTED_VERSION}。')
     row(pa, '作用范围', '改动的都是仅供界面展示的趋势数据，不参与游戏逻辑和联机同步。唯一例外是「限制自主投资」，它会改变模拟结果。', last=True)
 
     # ---- refresh loop -------------------------------------------------------------------------------------------
@@ -1852,6 +1889,25 @@ def daemon_log(msg):
         pass
 
 
+def make_shortcut():
+    """Desktop shortcut that opens the window (no console), with the line-chart icon."""
+    import subprocess
+    desk = subprocess.run(['powershell', '-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"],
+                          capture_output=True, text=True).stdout.strip()
+    pythonw = os.path.join(os.path.dirname(sys.executable), 'pythonw.exe')
+    if not os.path.exists(pythonw):
+        pythonw = sys.executable
+    lnk = os.path.join(desk, 'Trend Keeper.lnk')
+    q = chr(39)
+    ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut({q}{lnk}{q});"
+          f"$s.TargetPath={q}{pythonw}{q};$s.Arguments={q}-I -B \"{os.path.abspath(__file__)}\" gui{q};"
+          f"$s.WorkingDirectory={q}{HERE}{q};$s.IconLocation={q}{os.path.join(HERE, 'trend_keeper.ico')},0{q};"
+          f"$s.Description={q}Trend Keeper - Victoria 3 history charts{q};$s.Save()")
+    subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps], check=True)
+    print('已创建桌面快捷方式：', lnk)
+    return 0
+
+
 def autostart(cmd):
     """Start the headless daemon at Windows logon (a shortcut in the user's Startup folder)."""
     import subprocess
@@ -1883,8 +1939,13 @@ def main(argv):
     cmd = argv[0] if argv else 'gui'
     if cmd == 'gui':
         return run_gui()
+    if cmd == 'version':
+        print(__version__)
+        return 0
+    if cmd == 'shortcut':
+        return make_shortcut()
     if cmd == 'selftest':
-        return selftest(argv[1] if len(argv) > 1 else DEFAULT_EXE)
+        return selftest(argv[1] if len(argv) > 1 else find_exe())
     if cmd == 'daemon':
         first, _m = single_instance()
         if not first:

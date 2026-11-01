@@ -20,7 +20,7 @@ Steps (each can be switched off):
            interpolated; longer gaps are not invented.
 
 Only plaintext saves (header SAV0100, written with -debug_mode) are supported. The target is
-never modified. Default output: G:\\Victoria3Mods\\restored\\<name>_tk.v3; --install also puts
+never modified. Default output: <repo>/restored/<name>_tk.v3 (override with $TK_OUT_DIR; extra old saves are read from <repo>/history or $TK_HISTORY_DIR); --install also puts
 the result into "save games" so the game can load it.
 """
 import argparse
@@ -35,8 +35,9 @@ SPECIAL = re.compile(rb'[{}"]')
 TREND_DBS = ('country_manager', 'interest_groups', 'companies')
 HOURS_PER_TICK = 6                     # sample_rate=28 ticks -> 168 h = 7 days (verified on saves)
 SAVE_DIR = os.path.join(os.path.expanduser('~'), 'Documents', 'Paradox Interactive', 'Victoria 3', 'save games')
-HISTORY_DIR = r'G:\Victoria3Mods\history'       # extra old saves kept off the C: drive
-OUT_DIR = r'G:\Victoria3Mods\restored'
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+HISTORY_DIR = os.environ.get('TK_HISTORY_DIR', os.path.join(REPO_ROOT, 'history'))   # extra old saves of the same campaign
+OUT_DIR = os.environ.get('TK_OUT_DIR', os.path.join(REPO_ROOT, 'restored'))
 OUTPUT_SUFFIXES = ('_tk.v3', '_restored.v3')
 
 # (database, trend path) -> {vanilla capacity: new capacity}; must match trend_keeper.extend_saved

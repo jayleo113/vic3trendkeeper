@@ -13,17 +13,18 @@
 | 修复原版图表 | **能**：切换国家不再清空，所有国家记录人口，观察者模式下所有国家的州/建筑曲线不再停更，曲线延长到 100 年 | 不能，另做一套图表 |
 | 兼容图表类 mod | 天然兼容（修的是数据源，GDP Plotline Plus、GORA UI+ 等一起变完整） | 并存，不覆盖原版界面 |
 | 数据精度 | 原版每周一个点 | 每年 1 月 1 日一个点 |
-| 额外功能 | 游戏内按钮和快捷键开关；旧存档历史恢复工具 | 日志里的 5 个开关；14 项指标；CSV 导出；旧存档导入 |
+| 额外功能 | 深色界面、托盘图标和菜单、补丁覆盖日期显示；游戏内按钮和快捷键；旧存档历史恢复；热点采样等诊断工具 | 日志里的 5 个开关；14 项指标；CSV 导出；旧存档导入 |
 
 两者可以同时使用，互不冲突。
 
 ## 快速开始
 
 **Trend Keeper**（Windows，需要 Python 3）
-1. 双击 `trend_keeper/tools/启动 Trend Keeper.bat`，保持"游戏启动后自动应用"为勾选。
-2. 启动游戏。助手会自动连接并打补丁，窗口里可以随时开关每一项。
-3. 想让扩容类补丁对已有存档生效，需要打补丁后重新读档。
-4. 版本不匹配时助手只读不改。先运行 `python trend_keeper/tools/trend_keeper.py selftest` 自检。
+1. 先自检：`python trend_keeper/tools/trend_keeper.py selftest`（不需要开游戏，会自动找 Steam 里的 victoria3.exe，也可用环境变量 `VIC3_EXE` 指定）。
+2. 创建桌面图标：`python trend_keeper/tools/trend_keeper.py shortcut`，以后双击图标打开助手。窗口关闭后会缩到托盘继续运行。
+3. 启动游戏。助手会自动连接并打补丁，窗口或托盘菜单里可以随时开关每一项；"当前存档"区域会显示补丁在这个存档里生效的游戏日期范围。
+4. 想让扩容类补丁对已有存档生效，需要打补丁后重新读档。
+5. 版本不匹配时助手只读不改。
 
 **Full History Charts**
 1. 把 `full_history_charts` 文件夹放进 `文档/Paradox Interactive/Victoria 3/mod/`。
@@ -77,6 +78,9 @@
 | `trend_keeper/` | 助手（`tools/trend_keeper.py`）、存档历史恢复（`tools/trend_restore.py`）、游戏内按钮 mod 和详细说明 |
 | `full_history_charts/` | 纯 mod 本体 |
 | `fhc_tools/` | 纯 mod 的生成器、检查脚本、存档导入和 CSV 导出工具 |
+| `trend_keeper/tests/` | 助手的离线测试：`python -m unittest discover -s trend_keeper/tests -v` |
+| `docs/` | 自主投资卡顿的逆向分析笔记和实测记录、测试清单 |
+| `perf_experiment/` | 对照实验 mod：关闭自主投资，用来判断卡顿是不是来自它 |
 
 ## 说明
 
