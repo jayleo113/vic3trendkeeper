@@ -639,7 +639,7 @@ def gen_meta():
   "name" : "Full History Charts - 全时间历史图表",
   "id" : "fhc.full.history.charts",
   "version" : "{VERSION}",
-  "supported_game_version" : "1.14.*",
+  "supported_game_version" : "1.15.*",
   "short_description" : "Records GDP, population, budget, military, radicals/loyalists and more for every country every year and shows complete charts since the start in native side panels - next to the country panel of any country, also in observer mode. No vanilla GUI overrides.",
   "tags" : ["Utilities", "GUI"],
   "relationships" : [],
@@ -669,7 +669,7 @@ def main():
     write(f'common/scripted_buttons/{P}_buttons.txt', btns)
     write('.metadata/metadata.json', gen_meta(), bom=False)
     write('descriptor.mod', f'version="{VERSION}"\ntags={{\n\t"Utilities"\n\t"GUI"\n}}\n'
-          'name="Full History Charts - 全时间历史图表"\nsupported_version="1.14.*"\n', bom=False)
+          'name="Full History Charts - 全时间历史图表"\nsupported_version="1.15.*"\n', bom=False)
     for p in sorted(ROOT.rglob('*')):
         if p.is_file():
             print(f'{p.relative_to(ROOT)}  {p.stat().st_size:,} bytes')

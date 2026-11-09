@@ -3,4 +3,4 @@ tags={
 	"Utilities"
 }
 name="PERF TEST - Autonomous Investment OFF"
-supported_version="1.14.*"
+supported_version="1.15.*"

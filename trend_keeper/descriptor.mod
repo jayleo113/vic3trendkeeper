@@ -4,4 +4,4 @@ tags={
 	"Fixes"
 }
 name="Trend Keeper - 历史曲线修复"
-supported_version="1.14.*"
+supported_version="1.15.*"

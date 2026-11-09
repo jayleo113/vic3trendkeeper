@@ -1,6 +1,6 @@
 # vic3trendkeeper
 
-让维多利亚 3 的历史图表在**切换国家后**和**观察者模式下**保持完整。测试版本：Victoria 3 **1.14.5**。
+让维多利亚 3 的历史图表在**切换国家后**和**观察者模式下**保持完整。测试版本：Victoria 3 **1.14.5** 和 **1.15.0**。
 
 > English: keeps Victoria 3 history charts complete after switching countries and in observer mode. Two parts: a runtime memory helper (`trend_keeper`) that fixes the engine, and a pure Steam-workshop-compatible mod (`full_history_charts`).
 
@@ -66,7 +66,7 @@
 
 ## 限制
 
-- Trend Keeper 的补丁地址只适用于 1.14.5（`victoria3.exe` 97,774,200 字节）。游戏更新后要重新适配，在此之前助手会因签名不匹配而自动进入只读模式。
+- Trend Keeper 已验证的版本：1.14.5（`victoria3.exe` 97,774,200 字节）和 1.15.0（99,988,600 字节）。补丁位置靠特征码和代码结构在你本机的 exe 里定位，游戏再更新后先运行 `selftest`：全部 OK 才可信，任何一项找不到助手都会自动进入只读模式，不做任何修改。
 - 预算、州、建筑、市场价格这几类曲线原版就不写进存档，读档后从读档当天重新开始。
 - 补丁生效之前从来没被记录过的数据找不回来；被清空但旧存档里还留着的部分，可以用 `恢复存档历史.bat` 补回。
 - 纯 mod 的日志条目只出现在玩家国家上；观察者模式下没有玩家国家，条目和开关不会出现，但记录和图表照常工作。

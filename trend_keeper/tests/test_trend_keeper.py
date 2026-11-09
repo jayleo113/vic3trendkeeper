@@ -20,7 +20,7 @@ except ImportError:
     capstone = None
 
 EXE = tk.find_exe()
-HAS_EXE = os.path.isfile(EXE) and os.path.getsize(EXE) == 97774200       # the tested 1.14.5 build
+HAS_EXE = os.path.isfile(EXE) and os.path.getsize(EXE) in tk.TESTED_BUILDS      # a build the patches were verified on
 D = 24                                                                  # hours per game day
 BASE = (1900 + 5000) * 365 * D                                           # 1900.1.1 on the game clock
 
@@ -116,7 +116,7 @@ class Config(unittest.TestCase):
             self.assertIn(n, tk.PATCHES)
 
 
-@unittest.skipUnless(HAS_EXE, 'victoria3.exe 1.14.5 not found (set $VIC3_EXE)')
+@unittest.skipUnless(HAS_EXE, 'a tested victoria3.exe was not found (set $VIC3_EXE)')
 class PatchResolvers(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -159,7 +159,7 @@ class PatchResolvers(unittest.TestCase):
                 self.assertLessEqual(a1, b0, f'{an} overlaps {bn}')
 
 
-@unittest.skipUnless(HAS_EXE and capstone, 'needs victoria3.exe 1.14.5 and capstone')
+@unittest.skipUnless(HAS_EXE and capstone, 'needs a tested victoria3.exe and capstone')
 class GeneratedCode(unittest.TestCase):
     def test_cap_investment_code_is_what_we_think(self):
         img = tk.Image(EXE)

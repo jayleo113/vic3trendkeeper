@@ -56,9 +56,26 @@ import threading
 import time
 
 GAME_EXE = 'victoria3.exe'
-TESTED_VERSION = '1.14.5'
-__version__ = '4.0.0'
+TESTED_BUILDS = {97774200: '1.14.5', 99988600: '1.15.0'}        # victoria3.exe size -> version the patches were verified on
+TESTED_VERSION = ', '.join(TESTED_BUILDS.values())
+__version__ = '4.1.0'
 LEGACY_EXE = r'G:\SteamLibrary\steamapps\common\Victoria 3\binaries\victoria3.exe'
+
+
+def game_version(exe_path):
+    """Version text of an installed game: the launcher's settings file, else the known exe sizes, else '未知'."""
+    try:
+        cfg = os.path.join(os.path.dirname(os.path.dirname(exe_path)), 'launcher', 'launcher-settings.json')
+        with open(cfg, encoding='utf-8') as f:
+            raw = json.load(f).get('rawVersion')
+        if raw:
+            return raw
+    except (OSError, ValueError):
+        pass
+    try:
+        return TESTED_BUILDS.get(os.path.getsize(exe_path), '未知')
+    except OSError:
+        return '未知'
 
 
 def find_exe():
@@ -185,12 +202,18 @@ def rel32(src_next, dst):
 
 
 def resolve_keep_history(img):
-    site = img.find_one('49 8d 8e 70 22 00 00 e8 ?? ?? ?? ?? 49 8d 8e a8 22 00 00 e8 ?? ?? ?? ?? '
-                        '49 8d 8e 18 23 00 00 e8 ?? ?? ?? ?? 49 8d 8e 50 23 00 00 e8', 'ClearCountryTrends')
-    # the first calls must all go to the same function (CTrend::Clear)
-    tgts = {site + o + 5 + struct.unpack('<i', img.bytes_at(site + o + 1, 4))[0] for o in (7, 19, 31)}
-    if len(tgts) != 1:
-        raise LookupError('ClearCountryTrends: 调用目标不一致')
+    # ClearCountryTrends clears four country curves with `lea rcx,[r14+D] ; call CTrend::Clear`. The displacements move
+    # between game versions but keep their spacing: D, D+0x38, D+0xA8, D+0xE0 (1.14.5: 0x2270, 1.15: 0x2320).
+    lea = '49 8d 8e ?? ?? 00 00 e8 ?? ?? ?? ??'
+    hits = []
+    for site in img.find(' '.join([lea] * 4)):
+        d = [struct.unpack('<I', img.bytes_at(site + 12 * i + 3, 4))[0] for i in range(4)]
+        t = {site + 12 * i + 12 + struct.unpack('<i', img.bytes_at(site + 12 * i + 8, 4))[0] for i in range(4)}
+        if d[1] - d[0] == 0x38 and d[2] - d[0] == 0xA8 and d[3] - d[0] == 0xE0 and len(t) == 1:
+            hits.append(site)
+    if len(hits) != 1:
+        raise LookupError(f'ClearCountryTrends: 特征码匹配 {len(hits)} 处（应为 1），游戏版本可能不同')
+    site = hits[0]
     epi = img.find_one('48 8b 5c 24 60 48 8b 6c 24 68 48 83 c4 20 41 5f 41 5e 41 5d 5f 5e c3',
                        'ClearCountryTrends 尾声', start_rva=site, end_rva=site + 0x600)
     flag = img.find_one('41 c6 86 ?? ?? 00 00 00', 'ClearCountryTrends 标志写入', start_rva=site, end_rva=epi)
@@ -202,7 +225,7 @@ def resolve_keep_history(img):
 
 
 def resolve_fix_pop_stats(img):
-    a = img.find_one('48 8b 98 08 06 00 00 e8 ?? ?? ?? ?? 84 c0 74 ?? 48 8b 53 08 48 8d 8d 18 0d 00 00 e8',
+    a = img.find_one('48 8b 98 08 06 00 00 e8 ?? ?? ?? ?? 84 c0 74 ?? 48 8b 53 08 48 8d 8d ?? ?? 00 00 e8',
                      'RecalcCountryPopStatistics')
     site = a + 7
     return [(site, img.bytes_at(site, 5), b'\xb0\x01\x0f\x1f\x00', False)]  # call IsTrendUpdateDay -> mov al,1 ; nop3
@@ -210,8 +233,8 @@ def resolve_fix_pop_stats(img):
 
 def resolve_track_pops(img):
     a = img.find_one('48 8b 07 44 8b 48 18 41 8b c9 81 e1 ff ff ff 00 41 3b 8e ec 00 00 00 73 ?? '
-                     '49 8b 86 e0 00 00 00 8b 14 88 41 3b d4 74 ?? 83 fa 02 75 ?? 41 3b 8d cc 16 00 00 73 ?? '
-                     '49 8b 85 c0 16 00 00 44 39 0c c8 75 ?? 48 63 4c c8 04 49 8b 85 d8 16 00 00 48 c1 e1 05 '
+                     '49 8b 86 e0 00 00 00 8b 14 88 41 3b d4 74 ?? 83 fa 02 75 ?? 41 3b 8d ?? ?? 00 00 73 ?? '
+                     '49 8b 85 ?? ?? 00 00 44 39 0c c8 75 ?? 48 63 4c c8 04 49 8b 85 ?? ?? 00 00 48 c1 e1 05 '
                      '48 03 c1 80 78 18 00 0f 84', 'UpdatePopTrends')
     skip = a + 0x19 + struct.unpack('<b', img.bytes_at(a + 0x18, 1))[0]    # loop "continue" target
     lookup = a + 0x2d                                                       # record lookup after the status check
@@ -244,7 +267,7 @@ def imm_site(img, sig, what, new_imm):
     return (a + 14, img.bytes_at(a + 14, 4), struct.pack('<I', new_imm), False)
 
 
-def resolve_extend_saved(img):
+def _extend_saved_exact(img):
     sites = [
         # CPopStatistics ctor: country radicals / loyalists, 10 -> 100 years
         ('48 8d 8b 18 04 00 00 ba 1c 00 00 00 41 b8 08 39 00 00 e8', 'country radicals', YEARS_100),
@@ -260,6 +283,56 @@ def resolve_extend_saved(img):
         ('49 8d 8e 68 01 00 00 ba 1c 00 00 00 41 b8 b4 05 00 00 e8', 'IG loyalists', YEARS_10),
     ]
     return [imm_site(img, sig, what, imm) for sig, what, imm in sites]
+
+
+def _trend_init_sites(img, rate, imm):
+    """[(rva of `mov edx,rate`, lea displacement, call target)] for `lea rcx,[reg+D] ; mov edx,rate ; mov r8d,imm ; call`."""
+    out = []
+    for a in img.find(f'ba {rate} 41 b8 {imm} e8 ?? ?? ?? ??'):
+        lea = img.bytes_at(a - 7, 3)
+        if lea not in (bytes.fromhex('488d8b'), bytes.fromhex('498d8e')):
+            continue
+        disp = struct.unpack('<I', img.bytes_at(a - 4, 4))[0]
+        out.append((a, disp, a + 16 + struct.unpack('<i', img.bytes_at(a + 12, 4))[0]))
+    return out
+
+
+def _extend_saved_structural(img):
+    """Same nine `Init(trend, rate, ticks)` immediates found by shape, for game versions that moved the struct offsets."""
+    first = img.find_one('48 8d 8b 38 03 00 00 ba 1c 00 00 00 41 b8 b4 05 00 00 e8', 'CBudget ctor')
+    init = first + 23 + struct.unpack('<i', img.bytes_at(first + 19, 4))[0]            # CTrend::Init
+
+    def pairs(sites, same_init):
+        by = {d: (a, d, t) for a, d, t in sites if (t == init) == same_init}
+        return [(by[d], by[d + 0x38]) for d in sorted(by) if d + 0x38 in by]
+
+    w1c = _trend_init_sites(img, '1c 00 00 00', '08 39 00 00')
+    ctor = pairs(w1c, True)
+    untracked = pairs(w1c, False)
+    tracked = pairs(_trend_init_sites(img, '04 00 00 00', '08 39 00 00'), False) or \
+        pairs(_trend_init_sites(img, '04 00 00 00', '08 39 00 00'), True)
+    for name, found in (('国家构造函数', ctor), ('变为不被跟踪', untracked), ('变为被跟踪', tracked)):
+        if len(found) != 1:
+            raise LookupError(f'extend_saved {name}：找到 {len(found)} 组（应为 1），游戏版本可能不同')
+    in_pair = {x[0] for pr in ctor for x in pr}
+    clout = [x for x in w1c if x[2] == init and x[0] not in in_pair]
+    if len(clout) != 1:
+        raise LookupError(f'extend_saved 利益集团影响力：找到 {len(clout)} 处（应为 1），游戏版本可能不同')
+    ca, cd, _ = clout[0]
+    ig = [x for x in _trend_init_sites(img, '1c 00 00 00', 'b4 05 00 00')
+          if x[2] == init and 0 < x[0] - ca < 0xA0 and x[1] in (cd + 0x38, cd + 0x70)]
+    if len(ig) != 2:
+        raise LookupError(f'extend_saved 利益集团激进/忠诚：找到 {len(ig)} 处（应为 2），游戏版本可能不同')
+    targets = [(a, YEARS_100) for pr in ctor + untracked + tracked for a, _d, _t in pr] + [(ca, YEARS_100)] + \
+              [(a, YEARS_10) for a, _d, _t in ig]
+    return [(a + 7, img.bytes_at(a + 7, 4), struct.pack('<I', v), False) for a, v in targets]
+
+
+def resolve_extend_saved(img):
+    try:
+        return _extend_saved_exact(img)
+    except LookupError:
+        return _extend_saved_structural(img)
 
 
 def resolve_extend_budget(img):
@@ -281,11 +354,11 @@ INV_DATA = 0x100        # offset of the data area inside the helper-allocated bl
 INV_FIELDS = ('budget', 'min', 'calls', 'throttled', 'max_p', 'max_n')   # u32 each, from INV_DATA
 
 
-def _asm_invest(cave, site):
+def _asm_invest(cave, site, count_disp):
     """45+ bytes of x64 for the cap, RIP-relative to the data area, hand assembled (no assembler dependency).
 
     cmp edx,ebx ; cmovg ebx,edx            the two replaced instructions: ebx = n = max(1, pool/cost)
-    mov ecx,[r14+0x21c]                    P = number of potential buildings of this country
+    mov ecx,[r14+count_disp]               P = number of potential buildings of this country (0x21c in 1.14.5, 0x244 in 1.15)
     test ecx,ecx ; jle done
     inc [calls] ; max_p = max(max_p, P) ; max_n = max(max_n, n)
     mov eax,[budget] ; xor edx,edx ; div ecx ; cmp eax,[min] ; jae ok ; mov eax,[min]     cap = max(min, budget/P)
@@ -307,7 +380,7 @@ def _asm_invest(cave, site):
         fixups.append((len(out), label))
         emit(b'\0')
 
-    emit('3bd30f4fda'); emit('418b8e1c020000'); emit('85c9'); jcc('7e', 'done')
+    emit('3bd30f4fda'); emit('418b8e' + struct.pack('<I', count_disp).hex()); emit('85c9'); jcc('7e', 'done')
     rip('ff05', 'calls')
     rip('3b0d', 'max_p'); jcc('76', 'p_ok'); rip('890d', 'max_p'); labels['p_ok'] = len(out)
     rip('3b1d', 'max_n'); jcc('76', 'n_ok'); rip('891d', 'max_n'); labels['n_ok'] = len(out)
@@ -334,8 +407,14 @@ def resolve_cap_investment(img):
     throttled. The first `cap` placements are exactly the vanilla ones; the rest wait for the next weekly task.
     BUDGET / MIN and some counters live in the data area, so they can be changed while the game runs."""
     site = img.find_one('3b d3 0f 4f da 85 db 0f 8e ?? ?? ?? ??', 'HandleAutonomousInvestment 循环次数')
+    # P = the country AI's potential-building count. The serial apply function reads it right before the loop:
+    # movsxd rax,[r14+idx] ; test eax,eax ; js ; cmp eax,[r14+count] ; jge  (the offsets move between versions)
+    win = img.find('49 63 86 ?? ?? 00 00 85 c0 78 ?? 41 3b 86 ?? ?? 00 00 7d ??', start_rva=site - 0x300, end_rva=site)
+    if len(win) != 1:
+        raise LookupError(f'HandleAutonomousInvestment 潜在建筑数偏移：找到 {len(win)} 处（应为 1），游戏版本可能不同')
+    count_disp = struct.unpack('<I', img.bytes_at(win[0] + 14, 4))[0]
     cave = img.extra_cave()
-    code = _asm_invest(cave, site)
+    code = _asm_invest(cave, site, count_disp)
     assert len(code) < INV_DATA
     jmp = bytes.fromhex('e9') + rel32(site + 5, cave)
     return [(cave, bytes(len(code)), code, 2),                   # 2 = block allocated by the helper
@@ -511,6 +590,7 @@ class Game:
             raise OSError(f'OpenProcess 失败（{ctypes.get_last_error()}）')
         try:
             self.base, self.size, self.path = self._module()
+            self.version = game_version(self.path)
             self.patches, self.global_rva = resolve_all(self.path)
         except Exception:
             self.close()
@@ -1650,7 +1730,7 @@ def run_gui():
                 date = '—'
             dot.config(fg=AMBER if ctl.readonly else GREEN)
             pill.config(text='已附加（只读）' if ctl.readonly else '已附加')
-            status.set(f'PID {ctl.game.pid}\n游戏日期 {date}')
+            status.set(f'版本 {ctl.game.version} · PID {ctl.game.pid}\n游戏日期 {date}')
             info['text'] = f'已附加 · {date}'
             try:
                 for key, lab in cov_lbl.items():
@@ -1661,7 +1741,7 @@ def run_gui():
                         lab.config(text='\n'.join(span_text(a, b) for a, b in st_list[-3:]), fg=GREEN if st[key] == 'on' else TXT)
                 kh = ctl.cov.summary('keep_history')
                 if kh:
-                    status.set(f'PID {ctl.game.pid}\n游戏日期 {date}\n曲线保留自 {hours_to_date(kh[0])}')
+                    status.set(f'版本 {ctl.game.version} · PID {ctl.game.pid}\n游戏日期 {date}\n曲线保留自 {hours_to_date(kh[0])}')
                     info['kept'] = f'曲线保留自 {hours_to_date(kh[0])}'
                 else:
                     info['kept'] = ''
@@ -1852,6 +1932,9 @@ def run_gui():
 # ================================================================ CLI
 def selftest(exe):
     print(f'exe: {exe}')
+    ver = game_version(exe)
+    size = os.path.getsize(exe) if os.path.isfile(exe) else 0
+    print(f'游戏版本: {ver}（{size:,} 字节）' + ('' if size in TESTED_BUILDS else '  ← 不是已测试的版本，只有下面全部 OK 才可信'))
     res, glob = resolve_all(exe)
     img = Image(exe)
     ok = True
@@ -1968,7 +2051,7 @@ def main(argv):
     g = Game(pid)
     try:
         if cmd == 'status':
-            print(f'PID {pid}  base {g.base:#x}  {g.path}')
+            print(f'PID {pid}  base {g.base:#x}  {g.path}  版本 {g.version}')
             try:
                 print('游戏日期', hours_to_date(g.clock_hours()))
             except OSError as e:

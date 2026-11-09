@@ -15,7 +15,7 @@ Full History Charts v1.5.0 —— 纯 mod 测试说明
            "GUI"
        }
        name="Full History Charts - 全时间历史图表"
-       supported_version="1.14.*"
+       supported_version="1.15.*"
        path="C:/Users/你的用户名/Documents/Paradox Interactive/Victoria 3/mod/full_history_charts"
 3. 进入游戏。已有存档也可以直接用：启用后最迟一个月开始记录。
 
